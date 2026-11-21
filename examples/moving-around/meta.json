@@ -1,0 +1,7 @@
+{
+  "title": "Moving around",
+  "description": "The .animate syntax: shift, recolour, scale and rotate a square.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#movingaround",
+  "order": 50
+}

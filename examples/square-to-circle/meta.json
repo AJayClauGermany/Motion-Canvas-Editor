@@ -1,0 +1,7 @@
+{
+  "title": "Square to circle",
+  "description": "Manim's first tutorial scene: draw a square, morph it into a circle, fade out.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/tutorials/quickstart.html",
+  "order": 1
+}

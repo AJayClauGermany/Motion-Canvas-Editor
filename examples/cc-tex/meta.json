@@ -1,0 +1,7 @@
+{
+  "title": "LaTeX",
+  "description": "A Latex node morphs between formulas, with the {{...}} parts matched up so shared terms slide into place.",
+  "style": "canvas-commons",
+  "source": "https://canvascommons.io/docs/latex",
+  "order": 950
+}

@@ -1,0 +1,13 @@
+from manim import *
+
+class SquareToCircle extends Scene
+  construct()
+    circle := Circle()                      # create a circle
+    circle.set_fill PINK, opacity: 0.5      # set its colour and transparency
+
+    square := Square()                      # create a square
+    square.rotate PI / 4                    # rotate it a quarter turn
+
+    @play Create square                     # draw the square
+    @play Transform square, circle          # morph the square into the circle
+    @play FadeOut square                    # fade it out

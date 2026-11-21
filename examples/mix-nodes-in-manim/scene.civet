@@ -1,0 +1,37 @@
+from manim import *
+import { Latex, Rect, Txt } from "@canvas-commons/2d"
+
+# Native Canvas Commons nodes used as mobjects: wherever the Manim layer
+# expects a mobject, it also takes a node.
+class NodesInManim extends Scene
+  construct()
+    # Two native nodes, measured in pixels: a card laid out by flexbox, and LaTeX.
+    card := <Rect layout padding={[24, 36]} radius={20} fill="#1f3a4d">
+      <Txt fill="#ffffff" fontSize={52} fontFamily="Inter, sans-serif" text="native Rect" />
+    </Rect>
+    formula := <Latex tex="e^{i\pi} + 1 = 0" fill="#ffffff" fontSize={72} />
+
+    # They go into a VGroup with ordinary mobjects and are arranged with them.
+    circle := Circle radius: 0.8, color: BLUE, fill_opacity: 0.5
+    square := Square side_length: 1.5, color: GREEN
+    row := VGroup circle, card, square
+    row.arrange RIGHT, buff: 0.6
+
+    # Mobjects measure nodes (Brace), and wrap() gives a node Manim's methods.
+    brace := Brace card, UP
+    title := Text "nodes are mobjects too", font_size: 36
+    title.next_to brace, UP
+    wrap(formula).next_to row, DOWN, buff: 0.8
+
+    @play LaggedStart(FadeIn(circle, shift: UP), FadeIn(card, shift: UP), FadeIn(square, shift: UP), lag_ratio: 0.3)
+    @play GrowFromCenter(brace), Write(title), FadeIn(formula)
+
+    # .animate works on a node, and on a group that contains one.
+    @play row.animate.arrange(RIGHT, buff: 1.2), FadeOut(brace), FadeOut(title)
+    @play wrap(card).animate.scale(1.3).set_color(MAROON), wrap(formula).animate.set_color(YELLOW)
+
+    # The card is still a node. A native tween on its signals runs inside
+    # play, alongside the Manim animations.
+    @play Rotate(square, PI / 2), Indicate(circle), card.rotation(-12, 0.5).to(0, 0.5)
+    @play FadeOut(row, shift: DOWN), FadeOut(formula)
+    @wait 0.3

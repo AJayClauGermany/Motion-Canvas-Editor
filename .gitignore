@@ -1,6 +1,8 @@
 node_modules/
 .refs/
+.hutch/
 build/
 dist/
 artifacts/
 *.log
+dist-single/

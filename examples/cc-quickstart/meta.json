@@ -1,0 +1,7 @@
+{
+  "title": "Quickstart",
+  "description": "The Canvas Commons quickstart scene: a circle slides across the view and back while its fill tweens from red to yellow and back.",
+  "style": "canvas-commons",
+  "source": "https://canvascommons.io/docs/quickstart",
+  "order": 910
+}

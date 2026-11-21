@@ -1,0 +1,7 @@
+{
+  "title": "Arg min",
+  "description": "A dot slides down a parabola to its minimum.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#argminexample",
+  "order": 130
+}

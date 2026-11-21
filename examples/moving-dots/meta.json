@@ -1,0 +1,7 @@
+{
+  "title": "Moving dots",
+  "description": "Two dots driven by ValueTrackers, joined by a line that follows them.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#movingdots",
+  "order": 70
+}

@@ -1,0 +1,7 @@
+{
+  "title": "Sine curve from the unit circle",
+  "description": "A dot goes around the unit circle while its height traces out a sine curve.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#sinecurveunitcircle",
+  "order": 180
+}

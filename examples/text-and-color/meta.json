@@ -1,0 +1,6 @@
+{
+  "title": "Text and colour",
+  "description": "Feature tour: Text with t2c, slicing and per-letter colouring, Write and AddTextLetterByLetter.",
+  "style": "manim",
+  "order": 200
+}

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Motion Canvas Editor</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script data-boot-guard>
+      // If the engine cannot start (for example a host that blocks WebAssembly
+      // or generated code), say so instead of leaving a blank page.
+      (function () {
+        var last = '';
+        function note(e) {
+          last = (e && (e.message || (e.reason && (e.reason.message || e.reason)))) || last;
+        }
+        addEventListener('error', note);
+        addEventListener('unhandledrejection', note);
+        setTimeout(function () {
+          var app = document.getElementById('app');
+          if (!app || app.childElementCount > 0) return;
+          app.innerHTML =
+            '<div style="font:14px/1.5 system-ui,sans-serif;color:#dbe2ee;background:#0b0e14;min-height:100vh;padding:32px;box-sizing:border-box">' +
+            '<h1 style="font-size:18px;margin:0 0 8px">The editor could not start here</h1>' +
+            '<p style="max-width:60ch;margin:0 0 12px;color:#9aa5b8">The preview engine needs WebAssembly and the ability to run compiled scene code. ' +
+            'This host appears to block one of them. Run the project locally with <code>bun run dev</code>, or use the desktop build.</p>' +
+            '<pre style="white-space:pre-wrap;color:#fc6255;margin:0"></pre></div>';
+          app.querySelector('pre').textContent = String(last || '');
+        }, 8000);
+      })();
+    </script>
+    <script type="module" src="/src/editor/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "title": "Moving group to destination",
+  "description": "Shift a whole group so that one of its members lands on a target.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#movinggrouptodestination",
+  "order": 80
+}

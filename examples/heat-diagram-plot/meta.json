@@ -1,0 +1,7 @@
+{
+  "title": "Heat diagram plot",
+  "description": "A line graph through data points on labelled axes.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#heatdiagramplot",
+  "order": 150
+}

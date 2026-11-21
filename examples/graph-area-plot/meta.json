@@ -1,0 +1,7 @@
+{
+  "title": "Graph area plot",
+  "description": "Riemann rectangles and the area between two curves.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#graphareaplot",
+  "order": 140
+}

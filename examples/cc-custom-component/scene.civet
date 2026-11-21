@@ -1,0 +1,96 @@
+import {
+  Circle,
+  Node,
+  NodeProps,
+  Rect,
+  colorSignal,
+  initial,
+  makeScene2D,
+  signal,
+} from '@canvas-commons/2d'
+import {
+  Color,
+  ColorSignal,
+  PossibleColor,
+  SignalValue,
+  SimpleSignal,
+  all,
+  createRef,
+  createSignal,
+  easeInOutCubic,
+  tween,
+  waitFor,
+} from '@canvas-commons/core'
+
+export interface SwitchProps extends NodeProps
+  initialState?: SignalValue<boolean>
+  accent?: SignalValue<PossibleColor>
+
+export class Switch extends Node
+  # In Civet a decorator is written `@@name`, because `@` alone means `this`.
+  @@initial(false)
+  @@signal()
+  declare readonly initialState: SimpleSignal<boolean, this>
+
+  @@initial('#68ABDF')
+  @@colorSignal()
+  declare readonly accent: ColorSignal<this>
+
+  isOn: boolean
+  indicatorPosition := createSignal(0)
+  offColor := new Color('#242424')
+  indicator := createRef<Circle>()
+  container := createRef<Rect>()
+
+  @(props?: SwitchProps)
+    super {...props}
+
+    @isOn = @initialState()
+    @indicatorPosition(if @isOn then 50 else -50)
+
+    @add(
+      <Rect
+        ref={@container}
+        fill={if @isOn then @accent() else @offColor}
+        size={[200, 100]}
+        radius={100}
+      >
+        <Circle
+          x={=> @indicatorPosition()}
+          ref={@indicator}
+          size={[80, 80]}
+          fill="#ffffff"
+        />
+      </Rect>,
+    )
+
+  toggle(duration: number)
+    yield* all(
+      tween(duration, (value) =>
+        oldColor := if @isOn then @accent() else @offColor
+        newColor := if @isOn then @offColor else @accent()
+
+        @container().fill(
+          Color.lerp(oldColor, newColor, easeInOutCubic(value)),
+        )
+      ),
+
+      tween(duration, (value) =>
+        currentPos := @indicator().position()
+
+        @indicatorPosition(
+          easeInOutCubic(value, currentPos.x, if @isOn then -50 else 50),
+        )
+      ),
+    )
+    @isOn = !@isOn
+
+export default makeScene2D (view) ->
+  switchRef := createRef<Switch>()
+
+  view.add(<Switch ref={switchRef} initialState={true} />)
+
+  yield* switchRef().toggle(0.6)
+  yield* waitFor(1)
+  yield* switchRef().toggle(0.6)
+  yield* waitFor(1)

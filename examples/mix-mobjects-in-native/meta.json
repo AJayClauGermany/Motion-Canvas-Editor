@@ -1,0 +1,6 @@
+{
+  "title": "Mobjects in a native scene",
+  "description": "A makeScene2D scene that uses Manim mobjects through useManim: a mobject nested in a native Rect moves with it, and Manim animations run between native tweens.",
+  "style": "canvas-commons",
+  "order": 970
+}

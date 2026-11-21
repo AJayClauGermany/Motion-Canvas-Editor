@@ -1,0 +1,7 @@
+{
+  "title": "Canvas Commons basics",
+  "description": "The engine's native style: JSX nodes, refs and signal tweens, with explicit yield*.",
+  "style": "canvas-commons",
+  "source": "https://canvascommons.io/docs/quickstart",
+  "order": 900
+}

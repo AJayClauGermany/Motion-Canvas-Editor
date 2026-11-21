@@ -1,0 +1,7 @@
+{
+  "title": "Point with trace",
+  "description": "A path that grows behind a moving dot, built with an updater.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#pointwithtrace",
+  "order": 110
+}

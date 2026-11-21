@@ -1,0 +1,36 @@
+from manim import *
+import { createRef } from "@canvas-commons/core"
+import { Rect, Txt } from "@canvas-commons/2d"
+
+# Mobjects can be written as JSX. Attributes are the keyword arguments,
+# nested mobjects become submobjects, and other children (text, TeX parts)
+# are the positional arguments.
+class JsxMobjects extends Scene
+  construct()
+    circle := createRef()
+    row := <VGroup>
+      <Circle ref={circle} radius={0.9} color={BLUE} fill_opacity={0.5} />
+      <Square side_length={1.8} color={GREEN} />
+      <Star color={YELLOW} fill_opacity={0.6} />
+      {for i of [0...3]
+        <Dot radius={0.12} color={RED} />}
+    </VGroup>
+    row.arrange RIGHT, buff: 0.5
+
+    title := <Text font_size={44}>Mobjects in JSX</Text>
+    title.next_to row, UP, buff: 0.6
+    formula := <MathTex color={TEAL}>{"a^2"}{"+"}{"b^2"}</MathTex>
+    formula.next_to row, DOWN, buff: 0.6
+
+    # A native Canvas Commons node in the same scene. It is positioned in
+    # pixels and animated with signals, so it needs an explicit yield*.
+    badge := createRef<Rect>()
+    @view.add <Rect ref={badge} x={620} y={-380} width={360} height={90} radius={18} fill="#236b8e" opacity={0}>
+      <Txt fill="#ffffff" fontSize={36} text="native node" />
+    </Rect>
+
+    @play Write(title), Create(row, lag_ratio: 0.2)
+    @play Write formula
+    @play circle().animate.shift(0.6 * UP).set_color(PINK)
+    yield* badge().opacity 1, 0.5
+    @wait 0.5

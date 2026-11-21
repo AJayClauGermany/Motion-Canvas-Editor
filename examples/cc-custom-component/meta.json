@@ -1,0 +1,7 @@
+{
+  "title": "Custom component",
+  "description": "A Switch component built as a Node subclass: decorators declare its initialState and accent signals, and its toggle method tweens the knob and the track colour.",
+  "style": "canvas-commons",
+  "source": "https://canvascommons.io/docs/custom-components",
+  "order": 960
+}

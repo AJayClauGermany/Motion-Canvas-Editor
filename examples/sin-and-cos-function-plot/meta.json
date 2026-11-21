@@ -1,0 +1,7 @@
+{
+  "title": "Sine and cosine plot",
+  "description": "Axes with sine and cosine graphs, labels and a marked vertical line.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#sinandcosfunctionplot",
+  "order": 120
+}
