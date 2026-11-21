@@ -498,10 +498,12 @@ export class Engine {
    * they are the whole timeline.
    */
   private nativeSteps: TimelineSegment[] | null = null;
+  private nativeRun: {_stepDepth?: number} = {};
   private reported = false;
   private readonly runtimeScope = {
     __stepsBegin: () => {
       this.nativeSteps = [];
+      this.nativeRun = {};
       // The engine's scene object is reused across reloads; forget a Manim
       // scene that ran in it before.
       (useScene() as any).manim = undefined;
@@ -524,6 +526,21 @@ export class Engine {
   };
 
   private *recordStep(line: number, kind: 'play' | 'wait', name: string, thread: any): Generator<any, any, any> {
+    // Only the outermost `yield*` is a step: one inside a component's own
+    // generator method (`*toggle()`) is part of the step that called it. The
+    // depth lives on the run (a Manim scene instance, or the native run), so
+    // a run abandoned mid-step by a seek cannot leave it stuck.
+    const run: {_stepDepth?: number} = ((useScene() as any).manim as any) ?? this.nativeRun;
+    if ((run._stepDepth ?? 0) > 0) return yield* thread;
+    run._stepDepth = 1;
+    try {
+      return yield* this.recordOuterStep(line, kind, name, thread);
+    } finally {
+      run._stepDepth = 0;
+    }
+  }
+
+  private *recordOuterStep(line: number, kind: 'play' | 'wait', name: string, thread: any): Generator<any, any, any> {
     const start = useThread().time();
     const segment: TimelineSegment & {mapped: boolean} = {kind, label: name, start, end: start, line, mobjects: [], mapped: true};
     const manim: Scene | undefined = (useScene() as any).manim;

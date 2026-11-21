@@ -161,6 +161,20 @@ const check = (name, ok, detail = '') => {
   await settle(600);
   check('switching back restores the Civet source', /makeScene2D \(view\) ->/.test(await source()));
 
+  // Mixed scenes: native nodes take part in a Manim scene as mobjects.
+  await page.getByRole('button', {name: 'Close Lab'}).click();
+  await page.locator('.topbar select').first().selectOption('mix-nodes-in-manim');
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 7, null, {timeout: 20000}).catch(() => {});
+  await page.locator('.block').nth(2).click();
+  await settle(700);
+  const mixed = await page.locator('.outline .row').evaluateAll(rows => rows.map(r => r.textContent.replace(/\s+/g, ' ').trim()));
+  check('a mixed scene lists mobjects and wrapped nodes together', mixed.some(r => /Circle/.test(r)) && mixed.some(r => /Rect/.test(r)) && mixed.some(r => /Latex/.test(r)), mixed.join(' | '));
+  await page.locator('.outline .row', {hasText: 'Latex'}).first().click();
+  await settle(300);
+  check('a wrapped node can be inspected and is outlined', (await page.locator('.inspector dl').count()) === 1 && (await page.locator('.overlay .selection').count()) === 1);
+  await shot('12-mixed-scene');
+  await page.getByRole('button', {name: /Lab/}).click();
+
   // The language switch converts a Manim-style scene too, and an edited one round-trips.
   await page.locator('.topbar select').first().selectOption('square-to-circle');
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 15000}).catch(() => {});
