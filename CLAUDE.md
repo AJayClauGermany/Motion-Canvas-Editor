@@ -5,7 +5,8 @@ A portable, Manim-like animation editor built with web tech:
 | Layer | Tech | Package / version checked 2026-11-21 |
 |---|---|---|
 | Desktop shell | **Electrobun 2** (Bun main process, system webview or GPU-native UI). **Not Electron.** | `electrobun@2.0.7` (Hutch 0.30.0, Bun 1.4.4) |
-| Native UI | **Electrobun UI**: Zig HTML/CSS engine on WebGPU (Dawn), no webview. Part of the `electrobun` package | `import { createUIWindow } from "electrobun/main/ui"`, `jsxImportSource: "electrobun/main/ui"` |
+| Editor UI (main) | **Solid 2**, rendered in an Electrobun webview. **Not Solid 1.x and not React**: read the `solid-2.0` skill (`.claude/skills/solid-2.0/SKILL.md`) before writing Solid code | `solid-js@2.0.3`, `@solidjs/web@2.0.3`, `@solidjs/vite-plugin@3.0.1` (needs `@babel/core`) |
+| Native GPU UI (selective) | **Electrobun UI**: Zig HTML/CSS engine on WebGPU (Dawn), no webview. Part of the `electrobun` package. Uses Electrobun's own JSX library, Warren, **not Solid**. Only for specific surfaces (see Architecture) | `import { createUIWindow } from "electrobun/main/ui"`, `jsxImportSource: "electrobun/main/ui"` |
 | Animation engine | **Canvas Commons**, the community fork of Motion Canvas. Use `@canvas-commons/*`, **not** `@motion-canvas/*` | `@canvas-commons/{core,2d,editor,player,vite-plugin,ffmpeg}@0.4.0` (`next` tag exists) |
 | Scene language | **Civet** (CoffeeScript-flavoured TS superset → TS/TSX) | `@danielx/civet@0.11.17`, Vite plugin `@danielx/civet/vite` |
 | Bundler | Vite (Canvas Commons' plugin is Vite-only) | `vite` |
@@ -29,6 +30,8 @@ Shallow clones live in `.refs/` (gitignored). Re-run `tools/refs.sh` to update t
 | Canvas Commons docs | `.refs/canvas-commons/packages/docs/docs/` (see `migration/from-motion-canvas.mdx`) |
 | Canvas Commons source | `.refs/canvas-commons/packages/{core,2d,editor,player,vite-plugin}/src` |
 | Civet docs | `.refs/civet/civet.dev/*.md` (`reference.md` is the full syntax reference), `.refs/civet/CLAUDE.md` |
+| Solid 2 API (authoritative) | `.refs/solid/packages/solid/CHEATSHEET.md`, `.refs/solid/documentation/solid-2.0/MIGRATION.md` (1.x → 2.0), `.refs/solid/packages/solid/skills/solid-2.0/SKILL.md`, `.refs/solid/AGENTS.md` (says which docs are current). `documentation/solid-2.0/01-12` are frozen RFCs, history only |
+| Solid docs site source | `.refs/solid-docs/src/routes/`. **`main` is still mostly Solid 1.x** (`solid-js/web` instead of `@solidjs/web`); v2 pages are on `docs/solid-2-*` branches. Prefer the cheatsheet |
 | *Cross-ref:* Motion Canvas (original) | `.refs/motion-canvas/packages/docs/docs/`, `.refs/motion-canvas/packages/*/src`. Diff against Canvas Commons to see what the fork changed |
 | *Cross-ref:* Manim Community | `.refs/manim/docs/source/` (guides/tutorials, rst), `.refs/manim/manim/` (API reference = docstrings: `mobject/`, `animation/`, `scene/`, `camera/`) |
 | *Cross-ref:* ManimGL (3b1b) | `.refs/manimgl/docs/source/`, `.refs/manimgl/manimlib/` |
@@ -40,6 +43,7 @@ Shallow clones live in `.refs/` (gitignored). Re-run `tools/refs.sh` to update t
 - Motion Canvas (original): https://motioncanvas.io/docs/
 - Manim Community: https://docs.manim.community/en/stable/ (reference: `/en/stable/reference.html`)
 - ManimGL (3b1b): https://3b1b.github.io/manim/
+- Solid: https://docs.solidjs.com (`/llms.txt`, `/llms-full.txt`; may still describe 1.x), https://playground.solidjs.com
 - Bun: https://bun.com/docs, https://bun.com/llms.txt
 - Vite: https://vite.dev, https://vite.dev/llms.txt
 - Raw GitHub files: `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` works. `github.com` HTML pages are blocked, but `git clone` and release downloads work.
@@ -66,7 +70,18 @@ Canvas Commons scenes can be previewed or rendered in headless Chromium. Playwri
 
 None of this sandbox tooling is needed on a normal dev machine: use `hutch` / `bunx electrobun` directly.
 
+## Architecture
+
+- **Main editor UI** (timeline, inspector, scene tree, code panes, preview) is **Solid 2 in an Electrobun webview** (`BrowserWindow` / `BrowserView`).
+- **The Canvas Commons preview has to live in a webview.** Electrobun UI has no 2D `<canvas>`.
+- **Electrobun UI** (GPU, no webview) is used selectively, for surfaces where it's worth trying: e.g. a launcher, palettes and HUD-style panels, or native-feel windows. Code for these is Warren JSX (`electrobun/main/ui`). Warren's API resembles Solid's (`signal`, `Show`, `For`), but it's a different library, so don't mix the imports.
+- **Mixing them:** `ui.anchor(element, browserView)` positions a webview over a GPU-UI element. Anchored native views always draw **on top of** the GPU UI and aren't clipped, so GPU-UI popups can't overlap them. Keep overlays on the same layer as what they cover.
+
 ## Conventions
 - Scenes are written in Civet (`*.civet`) and compiled by `@danielx/civet/vite` (`civet({ts: 'preserve'})`) **before** `@canvas-commons/vite-plugin`.
-- `tsconfig`: `"jsx": "react-jsx"`, `"jsxImportSource": "@canvas-commons/2d/lib"` for scenes. Electrobun UI code uses `electrobun/main/ui` as its JSX source, so keep those in separate tsconfig scopes.
+- **Three JSX worlds**, kept in separate directories and tsconfig scopes:
+  - Canvas Commons scenes: `"jsx": "react-jsx"`, `"jsxImportSource": "@canvas-commons/2d/lib"`.
+  - Solid editor UI: compiled by `@solidjs/vite-plugin`, scoped with `solid({include: [<editor dir>/**]})`, with `"jsx": "preserve"`, `"jsxImportSource": "@solidjs/web"` (**not** `solid-js` as in 1.x). If Solid's compiler sees scene files, it will break them.
+  - Electrobun UI: `"jsxImportSource": "electrobun/main/ui"` (main process, bundled by Hutch, not Vite).
+- Vite plugin order: `civet({ts: 'preserve'})`, then `solid({include: [...]})`, then `canvasCommons()`. Verified 2026-11-21: Civet `.civet` files work for both Solid components and scenes. A Solid 2 component written in Civet renders and updates in Chromium.
 - Package manager: Bun.
