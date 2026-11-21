@@ -1,0 +1,6 @@
+node_modules/
+.refs/
+build/
+dist/
+artifacts/
+*.log
