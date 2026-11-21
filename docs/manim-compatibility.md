@@ -320,6 +320,47 @@ move_dot_and_draw_curve()
   @wait 8.5
 ```
 
+## Mobjects as JSX
+
+Mobjects can also be written as JSX, the way Canvas Commons nodes are. It is
+the same constructor underneath, so both spellings can be mixed freely.
+
+```civet
+row := <VGroup>
+  <Circle radius={0.9} color={BLUE} fill_opacity={0.5} />
+  <Square side_length={1.8} color={GREEN} />
+  {for i of [0...3]
+    <Dot radius={0.12} color={RED} />}
+</VGroup>
+title := <Text font_size={44}>Mobjects in JSX</Text>
+formula := <MathTex color={TEAL}>{"a^2"}{"+"}{"b^2"}</MathTex>
+```
+
+| JSX | Means |
+|---|---|
+| Attributes | The keyword arguments, in `snake_case` or `camelCase`. Positional parameters are available by name too: `<Line start={LEFT} end={RIGHT} />` |
+| Children that are mobjects | Submobjects, added in order. Arrays and loops are flattened |
+| Other children (text, numbers) | Positional arguments: `<Text>Hi</Text>`, `<MathTex>{"a"}{"+"}{"b"}</MathTex>` |
+| `ref={myRef}` | Receives the mobject, so `createRef()` from `@canvas-commons/core` works: `myRef().animate.shift UP` |
+
+Limits:
+
+- A mobject is not a Canvas Commons node. `<Rect><Circle /></Rect>` with a Manim
+  `Circle` inside a native `Rect` does not work, and neither does the reverse.
+  Both kinds can live in one scene: mobjects through `@add`/`@play`, native
+  nodes through `@view.add`. Native nodes draw above the mobjects.
+- With `from manim import *`, names such as `Circle` and `Line` are the Manim
+  classes. Import a native node of the same name under an alias
+  (`import { Circle as CircleNode } from "@canvas-commons/2d"`).
+- Points cannot be children, because the JSX runtime flattens arrays. Pass them
+  as attributes (`<Line start={a} end={b} />`), and call classes that take a
+  list of points positionally, such as `Polygon`, the normal way.
+- JSX only constructs. Positioning (`next_to`, `arrange`) and animation are
+  still method calls. Animations are not JSX elements.
+- Signals as attribute values are not reactive on mobjects; use updaters.
+
+See `examples/jsx-mobjects`.
+
 ## Ported gallery examples
 
 Each folder in `examples/` holds `scene.civet`, the original `manim.py` and

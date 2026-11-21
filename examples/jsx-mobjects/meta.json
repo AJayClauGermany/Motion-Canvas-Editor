@@ -1,0 +1,6 @@
+{
+  "title": "Mobjects in JSX",
+  "description": "The same Manim mobjects written as JSX, with refs and a native Canvas Commons node alongside.",
+  "style": "manim",
+  "order": 230
+}

@@ -237,9 +237,44 @@ export function aliasFields(proto: object, fields: string[]) {
 export function callable<T extends new (...args: any[]) => any>(klass: T): T & ((...args: ConstructorParameters<T>) => InstanceType<T>) {
   return new Proxy(klass, {
     apply(target, _this, args) {
-      return new target(...args);
+      return isJsxCall(args) ? fromJsx(target, args[0]) : new target(...args);
     },
   }) as any;
+}
+
+/**
+ * Canvas Commons' JSX runtime calls a non-node component as
+ * `type({...props, ref, children, key})`, always with those three keys.
+ */
+function isJsxCall(args: any[]): boolean {
+  const props = args[0];
+  return args.length === 1 && isPlain(props) && 'ref' in props && 'children' in props && 'key' in props;
+}
+
+const isMobjectLike = (v: any) => !!v && typeof v === 'object' && typeof v.getFamily === 'function';
+
+/**
+ * `<Circle radius={2} color={BLUE} />` — attributes are the keyword
+ * arguments. Children that are mobjects become submobjects; any other child
+ * (text, a number) is a positional argument, so `<Text>Hi</Text>`
+ * and `<MathTex>{"a"}{"+"}{"b"}</MathTex>` read naturally. `ref` receives the
+ * instance, which makes Canvas Commons' `createRef` work.
+ */
+function fromJsx(target: new (...args: any[]) => any, jsxProps: Record<string, any>): any {
+  const {ref, children, key: _key, ...props} = jsxProps;
+  const kids = (Array.isArray(children) ? children.flat(Infinity) : [children]).filter(
+    (c: any) => c !== undefined && c !== null && c !== false && c !== true,
+  );
+  const positional = kids
+    .filter((c: any) => !isMobjectLike(c))
+    .map((c: any) => (typeof c === 'string' ? c.trim() : c))
+    .filter((c: any) => c !== '');
+  const submobjects = kids.filter(isMobjectLike);
+  for (const name of Object.keys(props)) if (props[name] === undefined) delete props[name];
+  const instance = new target(...positional, props);
+  if (submobjects.length) instance.add(...submobjects);
+  if (typeof ref === 'function') ref(instance);
+  return instance;
 }
 
 let sceneFrame = /scene-source\.js:(\d+)/;

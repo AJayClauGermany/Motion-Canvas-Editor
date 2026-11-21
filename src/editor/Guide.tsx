@@ -15,6 +15,7 @@ const rows: [string, string, string][] = [
   ['Unpack', 'VGroup(*dots)', 'VGroup ...dots'],
   ['Raw TeX', 'MathTex(r"\\frac{a}{b}")', 'MathTex r`\\frac{a}{b}`'],
   ['Comment', '# note', '# note'],
+  ['JSX (optional)', 'Circle(radius=2, color=BLUE)', '<Circle radius={2} color={BLUE} />'],
 ];
 
 export function Guide() {
