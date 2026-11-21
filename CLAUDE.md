@@ -75,7 +75,7 @@ None of this sandbox tooling is needed on a normal dev machine: use `hutch` / `b
 
 | Path | What |
 |---|---|
-| `src/manim/` | The Manim-style layer on Canvas Commons (TypeScript): `mobject.ts` (Mobject/VMobject on Manim-style Bézier points, units, y up), `geometry.ts`, `text.ts`, `tex.ts`, `animation.ts`, `graphing.ts`, `scene.ts`. `index.ts` builds `api`, the flat namespace a scene gets from `from manim import *` |
+| `src/manim/` | The Manim-style layer on Canvas Commons (TypeScript): `mobject.ts` (Mobject/VMobject on Manim-style Bézier points, units, y up), `geometry.ts`, `text.ts`, `tex.ts`, `animation.ts`, `graphing.ts`, `scene.ts`, `interop.ts` (native nodes as mobjects and the reverse). `index.ts` builds `api`, the flat namespace a scene gets from `from manim import *` |
 | `src/runtime/` | `compile.ts` (Civet → JS in the browser), `engine.ts` (Canvas Commons `Player` + `Stage` wrapper, timeline, outline, picking), `dialect.ts` (variant conversions), `python.ts` (Manim Python → Civet) |
 | `src/editor/` | The editor UI, Solid 2. `state.ts` is the single state object; `settings.ts` defines the Lab flags |
 | `shell/`, `electrobun.config.ts` | Electrobun desktop shell around the Vite build (`docs/desktop-shell.md`) |
@@ -105,6 +105,11 @@ bun run shell:dev        # desktop app (sandbox: see quirks above)
   - `engine.ts` outline/inspect/bounds/pick handle both mobjects (numeric ids) and native nodes (string keys, read inside `startScene`/`endScene`). World space for nodes has its origin at the top-left of the frame.
   - `language: 'tsx'` in `CompileOptions` skips Civet and all dialect sugar (operator overloading stays on for a TSX scene that imports `'manim'`). The Lab's "Source language" flag applies to both styles and converts the open document with `src/runtime/convert.ts`: `civetToTsx` is exact (Civet's own output plus an import list for `from manim import *`), `tsxToCivet` is best-effort and must keep producing Civet that compiles (`civetCompat` parenthesises single-parameter arrows, which Civet would otherwise read as calls). `tools/e2e.cjs` converts every scene to the other language and fails if steps or duration differ.
   - Mobject classes accept JSX calls (`fromJsx` in `src/manim/util.ts`).
+  - **The two styles mix in both directions** through `src/manim/interop.ts` (`docs/manim-compatibility.md`, "Mixing with Canvas Commons nodes"; `examples/mix-*`):
+    - `NodeMobject` wraps a native node as a leaf mobject. `toMobject` (scenes: `wrap`) is called wherever the Manim layer is handed a node: through `hooks.toMobject` in `util.ts` for the modules below `interop.ts` (`callable` converts constructor arguments, `Mobject.add`, `next_to`, animations) and directly in `scene.ts`. State is two-way: `NodeMobject._sync` pulls what the native side changed and pushes what Manim changed (`reconcile` in `interop_math.ts`, the DOM-free part with the unit helpers). `Scene.sync()` gets a leaf's node from `Mobject._makeNode`, so a wrapped node sits in the mobjects' z-order, and it also runs before every render (`_renderSync`).
+    - `MobjectHost` is a node that draws a mobject in its own local space. `Node.prototype.parseChildren` and `insert` are patched once to create it for a mobject child. `Scene.sync()` skips leaves that a host draws (`hostOf`).
+    - `useManim(view)` (`scene.ts`) attaches a `Scene` without a class to a native scene. Such a scene is not `selfReporting`: `Engine.recordStep` keeps the native steps as the timeline and the scene's `play` annotates the open step instead of recording its own.
+    - `Scene.play` runs generator arguments (native tweens) as child threads next to the animations.
 - **Every user-facing design choice still under evaluation is a Lab flag** in `src/editor/settings.ts`. Add a flag rather than hard-coding a new variant.
 
 - **Main editor UI** (timeline, inspector, scene tree, code panes, preview) is **Solid 2 in an Electrobun webview** (`BrowserWindow` / `BrowserView`).

@@ -250,11 +250,14 @@ export class NodeMobject extends Mobject {
   public _sync(): void {
     const node = this.node;
     if (!node) return;
+    const {pullAll, pushAll} = this;
     try {
       this.reconcile(node);
     } catch {
       // Outside a scene context (the editor inspecting) or a disposed node:
-      // keep the last known state.
+      // keep the last known state and try again next time.
+      this.pullAll = pullAll;
+      this.pushAll = pushAll;
     }
   }
 
@@ -551,6 +554,11 @@ export class MobjectHost extends Node {
     list.push(this);
     ensureRenderSync(view);
     this._adopt();
+  }
+
+  /** A clone of the host (its parent was cloned) draws a copy of the mobject. */
+  public override instantiate(): this {
+    return new MobjectHost(this.mobject.copy()) as this;
   }
 
   /** Wrapped native nodes in the hosted family are drawn as real children. */

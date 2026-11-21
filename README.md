@@ -141,13 +141,27 @@ adding a variant is one entry there plus the code that reads it.
 | Language | Civet or TSX | Civet or TSX |
 | Timeline step | each `@play` / `@wait` | each `yield*` statement of the scene function |
 | Outline and inspector | mobjects | nodes |
+| The other world | native nodes are mobjects (`wrap`) | `useManim(view)` |
 | Examples | `examples/*` with `manim.py` | `examples/cc-*` with `original.tsx` |
 
 Nothing is translated between the two: a Manim `Scene` is itself a
 `makeScene2D` scene, and each mobject is drawn by a Canvas Commons node. That
-is why they mix. A Manim scene can add native nodes with `@view.add <Rect … />`
-and animate them with `yield*`, and mobjects can be written as JSX
-(`<Circle radius={2} color={BLUE} />`); see `examples/jsx-mobjects`. Either style can be written in either language. In TSX the compiler adds no
+is why they mix, in both directions (`src/manim/interop.ts`, `examples/mix-*`):
+
+- A native node works wherever a mobject does: `VGroup(circle, <Rect … />)`,
+  `arrange`, `next_to`, `FadeIn(node)`, `wrap(node).animate.shift(UP)`. It
+  stays a node, so `yield* node.opacity(1, 0.5)` still works, and `play` takes
+  such tweens next to Manim animations.
+- A mobject works wherever a node does: `<Rect><Circle radius={1} /></Rect>`
+  or `view.add(mob)` draws it in the parent's coordinate system.
+- A native scene gets `play`, `wait`, `add` and the camera from
+  `m := useManim(view)`.
+- `px`, `units`, `to_pixels` and `to_units` convert between units and pixels.
+
+Mobjects can also be written as JSX (`<Circle radius={2} color={BLUE} />`);
+see `examples/jsx-mobjects`. The rules and limits of mixing are in
+[docs/manim-compatibility.md](docs/manim-compatibility.md#mixing-with-canvas-commons-nodes).
+Either style can be written in either language. In TSX the compiler adds no
 syntax sugar: `yield*` is always written out, Manim names are imported from
 `'manim'`, and comments are `//`. Vector arithmetic (`2 * UP + LEFT`) still
 works in a TSX scene that imports the Manim layer. Opening a `.tsx` or `.civet`
