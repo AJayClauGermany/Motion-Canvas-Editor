@@ -4,6 +4,7 @@ import {ImportDialog} from './ImportDialog';
 import {LabPanel} from './LabPanel';
 import {Preview} from './Preview';
 import {SidePanel} from './SidePanel';
+import {restoreSizes} from './Splitter';
 import {createEditorState, EditorContext, useEditor} from './state';
 import {Timeline} from './Timeline';
 
@@ -96,17 +97,25 @@ function TopBar() {
           }}
         />
       </label>
-      <button onClick={() => ed.saveFile()} title="Download the scene as a .civet file">
+      <button
+        onClick={() => ed.saveFile()}
+        disabled={!ed.canDownload}
+        title={ed.canDownload ? 'Download the scene as a .civet file' : 'Downloads are not available in this hosted preview'}
+      >
         Save
       </button>
       <span class="divider" />
-      <button onClick={() => void ed.exportPng()} title="Save the current frame as PNG">
+      <button
+        onClick={() => void ed.exportPng()}
+        disabled={!ed.canDownload}
+        title={ed.canDownload ? 'Save the current frame as PNG' : 'Downloads are not available in this hosted preview'}
+      >
         PNG
       </button>
       <button
         onClick={() => void ed.exportWebm()}
         disabled={ed.exporting() !== null || !ed.canRecord}
-        title={ed.canRecord ? 'Record the animation to a video file (real time)' : 'This webview cannot record video. Use the browser build to export.'}
+        title={ed.canRecord ? 'Record the animation to a video file (real time)' : 'Video export is not available here. Use the browser build (Chromium) to export.'}
       >
         Video
       </button>
@@ -137,7 +146,7 @@ function Shell() {
   });
 
   return (
-    <div class="app" data-theme={ed.settings.theme} data-layout={ed.settings.layout} data-lab={ed.labOpen() ? 'open' : 'closed'}>
+    <div class="app" ref={el => restoreSizes(el)} data-theme={ed.settings.theme} data-layout={ed.settings.layout} data-lab={ed.labOpen() ? 'open' : 'closed'}>
       <TopBar />
       <main class="workspace">
         <CodePane />

@@ -59,6 +59,7 @@ Run **`tools/sandbox/setup.sh`** once per fresh container. It's idempotent: apt 
 3. Use **`bun install`**, not `hutch install`. Lockfile tarball URLs bypass the relay.
 4. `electrobun init` needs a global Hutch. Don't use it; copy a template from `.refs/electrobun/templates/<name>` instead.
 5. The `electrobun` npm bin downloads its paired Hutch to `~/.hutch/npm/electrobun/<ver>/linux-x64/bin/hutch` (this works). Call that binary directly, or `bunx electrobun …`.
+6. Run `bunx electrobun --version` once **before** sourcing `hutch-env.sh` in a fresh container. With the relay env already set, the first call fails with `could not acquire paired Hutch: Protocol "http:" not supported`; once the paired Hutch is cached it works.
 
 Verified working in the sandbox: build and run the `bun-ui` template headless:
 ```bash
@@ -66,11 +67,39 @@ source tools/sandbox/hutch-env.sh
 bunx electrobun build --env=dev
 xvfb-run -a -s "-screen 0 1280x800x24" bunx electrobun run --env=dev   # WebGPU via Mesa llvmpipe; screenshot with `import -window root shot.png`
 ```
-Canvas Commons scenes can be previewed or rendered in headless Chromium. Playwright is preinstalled; don't reinstall it.
+Canvas Commons scenes can be previewed or rendered in headless Chromium. Playwright is preinstalled; don't reinstall it. It is a global CommonJS install: `require('playwright')` works from a `.cjs` script run with `node`, but an ESM `import` or a Bun script does not find it. That is why `tools/e2e.cjs` and `tools/ui-smoke.cjs` are `.cjs`.
 
 None of this sandbox tooling is needed on a normal dev machine: use `hutch` / `bunx electrobun` directly.
 
+## Repo layout and commands
+
+| Path | What |
+|---|---|
+| `src/manim/` | The Manim-style layer on Canvas Commons (TypeScript): `mobject.ts` (Mobject/VMobject on Manim-style Bézier points, units, y up), `geometry.ts`, `text.ts`, `tex.ts`, `animation.ts`, `graphing.ts`, `scene.ts`. `index.ts` builds `api`, the flat namespace a scene gets from `from manim import *` |
+| `src/runtime/` | `compile.ts` (Civet → JS in the browser), `engine.ts` (Canvas Commons `Player` + `Stage` wrapper, timeline, outline, picking), `dialect.ts` (variant conversions), `python.ts` (Manim Python → Civet) |
+| `src/editor/` | The editor UI, Solid 2. `state.ts` is the single state object; `settings.ts` defines the Lab flags |
+| `shell/`, `electrobun.config.ts` | Electrobun desktop shell around the Vite build (`docs/desktop-shell.md`) |
+| `examples/<slug>/` | Bundled scenes: `scene.civet`, optional `manim.py` (the Python original), `meta.json` |
+| `harness.html`, `src/harness.ts` | Editor-less page exposing `window.harness` for headless rendering |
+| `tests/` | `bun test` unit tests for the DOM-free modules |
+
+```bash
+bun run dev              # editor on http://127.0.0.1:5273
+bun run build            # dist/  (also the input of the desktop shell)
+bun run typecheck
+bun test
+node tools/e2e.cjs [slug…]   # render examples headless → artifacts/e2e/<slug>.png contact sheets; LOOK at them
+node tools/ui-smoke.cjs      # drive the editor UI headless → artifacts/ui/*.png
+bun run shell:dev        # desktop app (sandbox: see quirks above)
+```
+
 ## Architecture
+
+- **Scenes are compiled and run in the browser**, not by a dev server: Civet → TypeScript → sucrase (types, JSX, CommonJS) → optional operator-overloading rewrite → `new Function`. The engine then drives a Canvas Commons `Player` and `Stage` directly. This is what lets one web build run both as a page and inside the Electrobun webview, so **`@canvas-commons/vite-plugin` is not used**. Every stage preserves line numbers; runtime lines map back to source through Civet's source map only.
+- **The Manim layer wraps, it does not fork.** A Manim `Scene` subclass becomes an ordinary `makeScene2D` generator scene; each leaf mobject owns one Canvas Commons node (`MobNode`) that paints it. Seeking re-runs the scene from the start, as Canvas Commons always does, so mobjects must be created inside `construct`.
+- **Never mutate a mobject's `points` array in place.** Replace it. The `Path2D` cache keys on array identity.
+- **Dialect sugar lives in `compile.ts`'s pre-pass**: `from manim import *` (enables the prelude), implicit `yield*` before `@play`/`@wait` and before helper methods that animate, `self.` → `@`, `# comments` (Civet `coffeeComment`, which disables `#` length shorthand and `#private` in scenes).
+- **Every user-facing design choice still under evaluation is a Lab flag** in `src/editor/settings.ts`. Add a flag rather than hard-coding a new variant.
 
 - **Main editor UI** (timeline, inspector, scene tree, code panes, preview) is **Solid 2 in an Electrobun webview** (`BrowserWindow` / `BrowserView`).
 - **The Canvas Commons preview has to live in a webview.** Electrobun UI has no 2D `<canvas>`.
@@ -78,10 +107,12 @@ None of this sandbox tooling is needed on a normal dev machine: use `hutch` / `b
 - **Mixing them:** `ui.anchor(element, browserView)` positions a webview over a GPU-UI element. Anchored native views always draw **on top of** the GPU UI and aren't clipped, so GPU-UI popups can't overlap them. Keep overlays on the same layer as what they cover.
 
 ## Conventions
-- Scenes are written in Civet (`*.civet`) and compiled by `@danielx/civet/vite` (`civet({ts: 'preserve'})`) **before** `@canvas-commons/vite-plugin`.
+- Scenes are written in Civet (`*.civet`) and compiled **in the browser** by `src/runtime/compile.ts`. Example scenes reach the editor as text through the `virtual:examples` module (`tools/vite-examples.ts`); do not import them with `?raw`, because `@danielx/civet/vite` claims every `.civet` import. The Vite Civet plugin is only for app modules written in Civet.
 - **Three JSX worlds**, kept in separate directories and tsconfig scopes:
-  - Canvas Commons scenes: `"jsx": "react-jsx"`, `"jsxImportSource": "@canvas-commons/2d/lib"`.
+  - Canvas Commons scenes: `"jsx": "react-jsx"`, `"jsxImportSource": "@canvas-commons/2d"` (0.4.0 exports `@canvas-commons/2d/jsx-runtime`; the older `/lib` path is not exported). The in-browser compiler sets this itself.
   - Solid editor UI: compiled by `@solidjs/vite-plugin`, scoped with `solid({include: [<editor dir>/**]})`, with `"jsx": "preserve"`, `"jsxImportSource": "@solidjs/web"` (**not** `solid-js` as in 1.x). If Solid's compiler sees scene files, it will break them.
   - Electrobun UI: `"jsxImportSource": "electrobun/main/ui"` (main process, bundled by Hutch, not Vite).
-- Vite plugin order: `civet({ts: 'preserve'})`, then `solid({include: [...]})`, then `canvasCommons()`. Verified 2026-11-21: Civet `.civet` files work for both Solid components and scenes. A Solid 2 component written in Civet renders and updates in Chromium.
+- Vite plugin order: `examplesPlugin()`, `civet({ts: 'preserve'})`, then `solid({include: ['src/editor/**']})`. If a project ever needs `canvasCommons()` again (file-based scenes with HMR), it goes last. Verified 2026-11-21: Civet `.civet` files work for both Solid components and scenes.
+- Solid 2 dev builds print diagnostics (`STRICT_READ_UNTRACKED`, `REACTIVE_WRITE_IN_OWNED_SCOPE`, …) to the console; `tools/ui-smoke.cjs` fails on any of them. Fix the cause, don't silence it.
+- Manim-layer methods are written in camelCase; `aliasSnake` adds the snake_case spelling. Python-style signatures use `kw(args, [positional names], {defaults})` from `src/manim/util.ts`, so a trailing object literal is the keyword arguments.
 - Package manager: Bun.

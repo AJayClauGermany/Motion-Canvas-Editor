@@ -168,7 +168,8 @@ export function overloadOperators(js: string): string {
       s.appendRight(node.end, ')');
     } else if (node.type === 'AssignmentExpression' && node.operator in assign) {
       if (node.left.type !== 'Identifier' && node.left.type !== 'MemberExpression') return;
-      if (isNumeric(node.right)) return;
+      // A numeric right-hand side still needs dispatch: in `v *= 2` the left
+      // side may be a vector.
       const target = js.slice(node.left.start, node.left.end);
       const between = js.slice(node.left.end, node.right.start);
       const at = node.left.end + between.indexOf(node.operator);

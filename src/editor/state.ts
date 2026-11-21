@@ -431,7 +431,9 @@ export function createEditorState() {
     importOpen,
     importNotes,
     fileName,
-    canRecord: engine.canRecord(),
+    canRecord: engine.canRecord() && canDownload,
+    /** Hosted previews (claude.ai artifacts) cannot hand files to the viewer. */
+    canDownload,
     reveal,
     cursorLine,
     labOpen,
@@ -444,6 +446,8 @@ export function createEditorState() {
     ...actions,
   };
 }
+
+const canDownload = typeof (globalThis as any).claude === 'undefined';
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);

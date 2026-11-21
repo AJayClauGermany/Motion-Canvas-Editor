@@ -20,6 +20,7 @@ import {
 import type {FullSceneDescription, Project, SceneDescription} from '@canvas-commons/core';
 import * as manim from '../manim';
 import {api, apiNames, config, makeManimScene, Mobject, Scene, SceneReport, VMobject} from '../manim';
+import {sceneFrameMarker as currentFrameMarker, setSceneSourceMarker} from '../manim/util';
 import type {CompileResult, Diagnostic} from './compile';
 
 export interface SceneEntry {
@@ -97,21 +98,110 @@ const MODULES: Record<string, any> = {
 
 const SOURCE_URL = 'scene-source.js';
 
-/** How many lines `new Function` puts before the first line of its body. */
-let headerLines: number | null = null;
-function headerOffset(): number {
-  if (headerLines !== null) return headerLines;
+type SceneBody = (require: (id: string) => any, exports: Record<string, any>, module: {exports: Record<string, any>}) => void;
+type SceneFactory = (...values: any[]) => SceneBody;
+
+/**
+ * How scene code gets evaluated. The editor wants stack frames that identify
+ * the scene module and its lines, because that is how a timeline step or a
+ * runtime error finds its source line.
+ *
+ * - `function`: `new Function` with a `sourceURL`. Chromium and Firefox name
+ *   frames after the `sourceURL`.
+ * - `blob`: a classic <script> loaded from a blob URL. JavaScriptCore (the
+ *   Electrobun webview on macOS and Linux) drops frames' locations for
+ *   `new Function` code, but reports blob URLs.
+ * - `inline`: an inline <script>, for pages whose Content Security Policy
+ *   forbids both of the above. Lines are not recoverable there.
+ */
+type EvalMode = 'function' | 'blob' | 'inline';
+let evalMode: EvalMode | null = null;
+/** Lines the wrapper puts before the first line of scene code. */
+let headerLines = 0;
+
+async function detectEvalMode(): Promise<EvalMode> {
+  if (evalMode) return evalMode;
   try {
     const probe = new Function(
       'a',
       `return (function(){ return new Error().stack; })()\n//# sourceURL=scene-calibrate.js`,
     );
     const m = /scene-calibrate\.js:(\d+)/.exec(String(probe()));
-    headerLines = m ? parseInt(m[1], 10) - 1 : 2;
+    if (m) {
+      headerLines = parseInt(m[1], 10) - 1;
+      return (evalMode = 'function');
+    }
   } catch {
-    headerLines = 2;
+    // `new Function` is forbidden here; try the script-based modes.
   }
-  return headerLines;
+  try {
+    await loadBlobScript('window.__sceneProbe = 1;');
+    if ((window as any).__sceneProbe === 1) {
+      delete (window as any).__sceneProbe;
+      return (evalMode = 'blob');
+    }
+  } catch {
+    // Blob scripts are forbidden too.
+  }
+  return (evalMode = 'inline');
+}
+
+function loadBlobScript(code: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(new Blob([code], {type: 'text/javascript'}));
+    const script = document.createElement('script');
+    let syntaxError: string | null = null;
+    const onError = (e: ErrorEvent) => {
+      if (e.filename === url) syntaxError = `${e.message} (line ${e.lineno})`;
+    };
+    const done = (ok: boolean) => {
+      window.removeEventListener('error', onError);
+      script.remove();
+      URL.revokeObjectURL(url);
+      if (ok && !syntaxError) resolve(url);
+      else reject(new Error(syntaxError ?? 'The scene script could not be loaded.'));
+    };
+    window.addEventListener('error', onError);
+    script.onload = () => done(true);
+    script.onerror = () => done(false);
+    script.src = url;
+    document.head.append(script);
+  });
+}
+
+async function makeSceneFactory(names: string[], js: string): Promise<SceneFactory> {
+  const mode = await detectEvalMode();
+  if (mode === 'function') {
+    setSceneSourceMarker(SOURCE_URL);
+    return new Function(
+      ...names,
+      `return function(require, exports, module){${js}\n}\n//# sourceURL=${SOURCE_URL}`,
+    ) as SceneFactory;
+  }
+  const slot = `__sceneFactory${Math.random().toString(36).slice(2)}`;
+  const code = `window[${JSON.stringify(slot)}] = function(${names.join(',')}){return function(require, exports, module){${js}\n}}`;
+  const take = (): SceneFactory | undefined => {
+    const factory = (window as any)[slot];
+    delete (window as any)[slot];
+    return typeof factory === 'function' ? factory : undefined;
+  };
+  if (mode === 'blob') {
+    const url = await loadBlobScript(code);
+    setSceneSourceMarker(url);
+    const factory = take();
+    if (factory) return factory;
+  }
+  // Chromium honours `sourceURL` on inline scripts, so lines still map there.
+  setSceneSourceMarker(SOURCE_URL);
+  const script = document.createElement('script');
+  script.textContent = `${code}\n//# sourceURL=${SOURCE_URL}`;
+  document.head.append(script);
+  script.remove();
+  const factory = take();
+  if (!factory) {
+    throw new Error('This page is not allowed to run generated code (blocked by its Content Security Policy).');
+  }
+  return factory;
 }
 
 function isSceneDescription(value: unknown): value is SceneDescription {
@@ -134,6 +224,8 @@ export class Engine {
   private listeners: {[K in keyof EngineEvents]?: Set<EngineEvents[K]>} = {};
   private runtimeDiagnostics: Diagnostic[] = [];
   private hitCanvas = document.createElement('canvas').getContext('2d')!;
+  /** Matches a stack frame inside the evaluated scene module. */
+  private frameMarker = /scene-source\.js:(\d+)/;
 
   public constructor() {
     this.logger.onLogged.subscribe(payload => {
@@ -160,13 +252,13 @@ export class Engine {
   /** Map a line in the evaluated module to the user's source line. */
   public mapLine(jsLine: number | undefined): number | undefined {
     if (!jsLine || !this.compiled) return undefined;
-    const idx = jsLine - headerOffset() - 1;
+    const idx = jsLine - headerLines - 1;
     return this.compiled.lineMap[idx] ?? undefined;
   }
 
   private lineFromStack(stack: string | undefined): number | undefined {
     if (!stack) return undefined;
-    const m = new RegExp(`${SOURCE_URL.replace('.', '\\.')}:(\\d+)`).exec(stack);
+    const m = this.frameMarker.exec(stack);
     return m ? this.mapLine(parseInt(m[1], 10)) : undefined;
   }
 
@@ -196,7 +288,7 @@ export class Engine {
 
     let exports: Record<string, any>;
     try {
-      exports = this.evaluate(compiled);
+      exports = await this.evaluate(compiled);
     } catch (e: any) {
       this.pushRuntimeError(e?.message ?? String(e), e?.stack);
       return false;
@@ -217,7 +309,7 @@ export class Engine {
     }
     for (const [name, klass] of Object.entries<any>(exports.__classes ?? {})) {
       if (typeof klass === 'function' && klass.prototype instanceof Scene) {
-        this.descriptions.set(name, makeManimScene(klass));
+        this.descriptions.set(name, makeManimScene(klass) as SceneDescription);
         entries.push({name, kind: 'manim'});
       }
     }
@@ -247,12 +339,10 @@ export class Engine {
     this.player?.requestSeek(0);
   }
 
-  private evaluate(compiled: CompileResult): Record<string, any> {
+  private async evaluate(compiled: CompileResult): Promise<Record<string, any>> {
     const names = compiled.prelude ? apiNames : ['__op'];
-    const factory = new Function(
-      ...names,
-      `return function(require, exports, module){${compiled.js}\n}\n//# sourceURL=${SOURCE_URL}`,
-    );
+    const factory = await makeSceneFactory(names, compiled.js);
+    this.frameMarker = currentFrameMarker();
     const body = factory(...names.map(n => api[n]));
     const module = {exports: {} as Record<string, any>};
     const require = (id: string) => {
@@ -295,7 +385,7 @@ export class Engine {
       this.stage.configure({size, resolutionScale: this.resolutionScale, background: null} as any);
       const player = new Player(project, {size, fps: this.fps, resolutionScale: this.resolutionScale});
       this.player = player;
-      player.onRender.subscribe(() => void this.render());
+      player.onRender.subscribe(() => this.render());
       player.onFrameChanged.subscribe(frame => this.emit('frame', frame));
       player.onDurationChanged.subscribe(duration => this.emit('duration', duration));
       player.onStateChanged.subscribe(state =>

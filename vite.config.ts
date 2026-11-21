@@ -25,10 +25,10 @@ export default defineConfig(({mode}) => ({
     outDir: mode === 'single' ? 'dist-single' : 'dist',
     chunkSizeWarningLimit: 6000,
     rollupOptions: {
-      input:
-        mode === 'single'
-          ? {index: resolve(import.meta.dirname, 'index.html')}
-          : {index: resolve(import.meta.dirname, 'index.html'), harness: resolve(import.meta.dirname, 'harness.html')},
+      input: {
+        index: resolve(import.meta.dirname, 'index.html'),
+        ...(mode === 'single' ? {} : {harness: resolve(import.meta.dirname, 'harness.html')}),
+      } as Record<string, string>,
     },
   },
   server: {port: 5273, host: '127.0.0.1'},

@@ -1,5 +1,6 @@
 import {createEffect, createMemo, For, onSettled, Show} from 'solid-js';
 import {CodeEditor, createCodeEditor} from './codemirror';
+import {Splitter} from './Splitter';
 import {useEditor} from './state';
 
 /** The editable Civet source, with diagnostics and the "now playing" line. */
@@ -84,6 +85,7 @@ export function CodePane() {
 
   return (
     <section class="pane code-pane" data-compare={ed.settings.compare}>
+      <Splitter variable="--code-w" edge="right" min={280} max={1400} label="Code pane width" />
       <header class="pane-head">
         <span class="file-tab">
           <span class="dot" data-status={ed.status()} />

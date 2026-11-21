@@ -1,5 +1,6 @@
 import {createEffect, createMemo, createSignal, For, onSettled, Show} from 'solid-js';
 import type {TimelineSegment} from '../runtime/engine';
+import {Splitter} from './Splitter';
 import {useEditor} from './state';
 
 const CREATE = /^(Create|ShowCreation|Write|DrawBorderThenFill|FadeIn|Grow|SpinIn|AddText|ShowIncreasing)/;
@@ -219,6 +220,7 @@ export function Timeline() {
   const empty = createMemo(() => !ed.timeline() || ed.timeline()!.segments.length === 0);
   return (
     <section class="pane timeline-pane" data-style={ed.settings.timeline}>
+      <Splitter variable="--timeline-h" edge="top" min={90} max={520} label="Timeline height" />
       <Show
         when={!empty() || ed.settings.timeline === 'scrubber'}
         fallback={

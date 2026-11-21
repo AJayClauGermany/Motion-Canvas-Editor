@@ -13,7 +13,7 @@
     "resolveJsonModule": true,
     "jsx": "preserve",
     "jsxImportSource": "@solidjs/web",
-    "types": ["vite/client"],
+    "types": ["vite/client", "bun"],
     "paths": {"manim": ["./src/manim/index.ts"]}
   },
   "include": ["src", "tools", "vite.config.ts"]
