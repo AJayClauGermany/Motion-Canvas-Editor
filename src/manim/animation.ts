@@ -16,13 +16,30 @@ import {
   wiggle as wiggleRate,
 } from './rate_functions';
 import {Glyph} from './text';
-import {aliasSnake, isPlain, kw, splitKw, toHex} from './util';
+import {aliasFields, aliasSnake, isPlain, kw, splitKw, toHex} from './util';
 import {add, mul, rotate, sub, Vec} from './vec';
 
 export interface SceneLike {
   add(...mobs: Mobject[]): any;
   remove(...mobs: Mobject[]): any;
   mobjects: Mobject[];
+}
+
+/** Whether `mob` is already on screen, on its own or inside a group. */
+function inScene(scene: SceneLike, mob: Mobject): boolean {
+  for (const m of scene.mobjects) {
+    if (m === mob) return true;
+    if (m.submobjects.length && m.getFamily().includes(mob)) return true;
+  }
+  return false;
+}
+
+/**
+ * Add a mobject an animation needs, unless it is already there: as in Manim,
+ * animating something never changes its place in the drawing order.
+ */
+function addIfMissing(scene: SceneLike, ...mobs: Mobject[]): void {
+  for (const mob of mobs) if (!inScene(scene, mob)) scene.add(mob);
 }
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -34,6 +51,8 @@ export class Animation {
   public lagRatio = 0;
   public remover = false;
   public introducer = false;
+  /** Play the animation backwards (Manim's `reverse_rate_function`). */
+  public reverseRateFunction = false;
   public name: string;
   public startingMobject!: Mobject;
   protected opts: Record<string, any>;
@@ -53,6 +72,7 @@ export class Animation {
     if (o.lagRatio !== undefined) this.lagRatio = o.lagRatio;
     if (o.remover !== undefined) this.remover = o.remover;
     if (o.introducer !== undefined) this.introducer = o.introducer;
+    if (o.reverseRateFunction !== undefined) this.reverseRateFunction = o.reverseRateFunction;
     return this;
   }
   public setRunTime(t: number): this {
@@ -76,7 +96,7 @@ export class Animation {
     return this.mobject.copy();
   }
   protected setupScene(scene: SceneLike): void {
-    if (this.mobject.getFamily().length > 0) scene.add(this.mobject);
+    addIfMissing(scene, this.mobject);
   }
   public finish(_scene: SceneLike): void {
     this.interpolate(1);
@@ -103,7 +123,7 @@ export class Animation {
       this.interpolateSubmobject(
         families[0][i],
         families[1][i],
-        this.rateFunc(sub),
+        this.rateFunc(this.reverseRateFunction ? 1 - sub : sub),
         families[2]?.[i],
       );
     }
@@ -224,6 +244,8 @@ export class DrawBorderThenFill extends Animation {
 }
 
 export class Write extends DrawBorderThenFill {
+  /** Start with the last submobject instead of the first. */
+  protected reverse: boolean;
   public constructor(mobject: Mobject, ...rest: any[]) {
     const o = kw(rest, [], {});
     const length = mobject.familyMembersWithPoints().length;
@@ -236,17 +258,23 @@ export class Write extends DrawBorderThenFill {
       introducer: !reverse,
       ...o,
     });
-    if (reverse) {
-      const f = this.rateFunc;
-      this.rateFunc = t => f(1 - t);
-    }
+    this.reverse = reverse;
+  }
+  protected override families(): Mobject[][] {
+    const families = super.families();
+    return this.reverse ? families.map(f => [...f].reverse()) : families;
   }
 }
 
 export class Unwrite extends Write {
   public constructor(mobject: Mobject, ...rest: any[]) {
-    const o = kw(rest, [], {});
-    super(mobject, {...o, reverse: true});
+    const o = kw(rest, [], {reverse: true});
+    super(mobject, {remover: true, introducer: false, ...o, reverseRateFunction: true});
+  }
+  public override cleanUp(scene: SceneLike): void {
+    super.cleanUp(scene);
+    // Leave the mobject intact so it can be shown again.
+    this.mobject.become(this.startingMobject);
   }
 }
 
@@ -341,8 +369,17 @@ export class Transform extends Animation {
   public override cleanUp(scene: SceneLike): void {
     super.cleanUp(scene);
     if (this.replace) {
-      scene.remove(this.mobject);
-      scene.add(this.targetMobject);
+      // Manim's `scene.replace`: the target takes the mobject's place in the
+      // drawing order when it can.
+      const at = scene.mobjects.indexOf(this.mobject);
+      if (at >= 0 && !inScene(scene, this.targetMobject)) {
+        const list = [...scene.mobjects];
+        list[at] = this.targetMobject;
+        scene.mobjects = list;
+      } else {
+        scene.remove(this.mobject);
+        addIfMissing(scene, this.targetMobject);
+      }
     }
   }
 }
@@ -395,6 +432,33 @@ export class ApplyFunction extends Transform {
   }
 }
 
+/** `ApplyPointwiseFunction(lambda p: ..., mob)`: bend a mobject through a point function. */
+export class ApplyPointwiseFunction extends Transform {
+  public constructor(fn: (p: Vec) => Vec, mobject: Mobject, ...rest: any[]) {
+    const o = kw(rest, [], {runTime: 3});
+    super(mobject, mobject.copy().applyFunction(fn), o);
+  }
+}
+
+export class ApplyMatrix extends Transform {
+  public constructor(matrix: number[][], mobject: Mobject, ...rest: any[]) {
+    const o = kw(rest, [], {aboutPoint: ORIGIN});
+    super(mobject, mobject.copy().applyMatrix(matrix, {aboutPoint: o.aboutPoint}), o);
+  }
+}
+
+/** Move each mobject to where the next one is (the last goes to the first). */
+export class CyclicReplace extends Transform {
+  public constructor(...args: any[]) {
+    const [mobs, o] = splitKw(args);
+    const group = new VGroup(...mobs);
+    const target = group.copy();
+    target.submobjects.forEach((m, i) => m.moveTo(mobs[(i + 1) % mobs.length].getCenter()));
+    super(group, target, {pathArc: PI / 2, ...o});
+  }
+}
+export class Swap extends CyclicReplace {}
+
 export class ScaleInPlace extends Transform {
   public constructor(mobject: Mobject, factor: number, ...rest: any[]) {
     super(mobject, mobject.copy().scale(factor), ...rest);
@@ -429,7 +493,7 @@ export class FadeTransform extends Animation {
     this.targetStart = this.target.copy();
     fitTo(this.targetStart, this.mobject);
     this.targetStart.fade(1);
-    scene.add(this.mobject, this.target);
+    addIfMissing(scene, this.mobject, this.target);
     this.interpolate(0);
   }
   public override interpolate(alpha: number): void {
@@ -625,6 +689,39 @@ export class UpdateFromAlphaFunc extends Animation {
   }
   public override interpolate(alpha: number): void {
     this.fn(this.mobject, this.rateFunc(clamp01(alpha)));
+  }
+}
+
+/** Move every point along `homotopy(x, y, z, t)` as `t` runs from 0 to 1. */
+export class Homotopy extends Animation {
+  private homotopy: (x: number, y: number, z: number, t: number) => Vec;
+  public constructor(homotopy: (x: number, y: number, z: number, t: number) => Vec, mobject: Mobject, ...rest: any[]) {
+    const o = kw(rest, [], {runTime: 3});
+    super(mobject, o);
+    this.homotopy = homotopy;
+  }
+  protected override interpolateSubmobject(sub: Mobject, start: Mobject, alpha: number): void {
+    sub._copyData(start);
+    sub._applyFunction(p => this.homotopy(p[0], p[1], p[2] ?? 0, alpha));
+  }
+}
+
+/** Animate a `DecimalNumber` toward a value. */
+export class ChangingDecimal extends Animation {
+  private fn: (alpha: number) => number;
+  public constructor(decimal: Mobject, fn: (alpha: number) => number, ...rest: any[]) {
+    const o = kw(rest, [], {});
+    super(decimal, o);
+    this.fn = fn;
+  }
+  public override interpolate(alpha: number): void {
+    (this.mobject as any).setValue(this.fn(this.rateFunc(clamp01(alpha))));
+  }
+}
+export class ChangeDecimalToValue extends ChangingDecimal {
+  public constructor(decimal: Mobject, target: number, ...rest: any[]) {
+    const start: number = (decimal as any).number ?? 0;
+    super(decimal, (a: number) => start + (target - start) * a, ...rest);
   }
 }
 
@@ -896,6 +993,114 @@ export class LaggedStartMap extends LaggedStart {
   }
 }
 
+// ---------------------------------------------------------- matching transforms
+
+/** A size- and position-independent fingerprint of a leaf's shape. */
+function shapeKey(m: Mobject): string {
+  if (m instanceof Glyph) return `glyph:${m.char}:${m.font}`;
+  if (!(m instanceof VMobject) || m.points.length === 0) return `empty:${m.id}`;
+  const [x0, y0, x1, y1] = m._ownBounds()!;
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  const size = y1 - y0 > 1e-9 ? y1 - y0 : x1 - x0 > 1e-9 ? x1 - x0 : 1;
+  let key = `${m.points.length}:`;
+  for (const p of m.points) {
+    key += `${Math.round(((p[0] - cx) / size) * 50)},${Math.round(((p[1] - cy) / size) * 50)};`;
+  }
+  return key;
+}
+
+/**
+ * Shared machinery of `TransformMatchingShapes` / `TransformMatchingTex`:
+ * parts with the same key morph into each other, the rest fade out and in.
+ */
+class TransformMatchingBase extends AnimationGroup {
+  private source: Mobject;
+  private targetMobject: Mobject;
+  private helpers: Mobject[] = [];
+
+  public constructor(
+    mobject: Mobject,
+    target: Mobject,
+    parts: (m: Mobject) => Mobject[],
+    keyOf: (m: Mobject) => string,
+    o: Record<string, any>,
+  ) {
+    const {transformMismatches, fadeTransformMismatches, keyMap, ...animOpts} = o;
+    const index = (list: Mobject[]) => {
+      const map = new Map<string, Mobject[]>();
+      for (const part of list) {
+        const key = keyOf(part);
+        if (!map.has(key)) map.set(key, []);
+        map.get(key)!.push(part);
+      }
+      return map;
+    };
+    const src = index(parts(mobject));
+    const tgt = index(parts(target));
+    // `key_map: {"a": "b"}` forces a source key to morph into a target key.
+    for (const [from, to] of Object.entries<string>(keyMap ?? {})) {
+      if (src.has(from) && tgt.has(to)) {
+        const moved = src.get(from)!;
+        src.delete(from);
+        src.set(to, [...(src.get(to) ?? []), ...moved]);
+      }
+    }
+    const matchedSource = new VGroup();
+    const matchedTarget = new VGroup();
+    const sourceOnly = new VGroup();
+    const targetOnly = new VGroup();
+    for (const [key, list] of src) {
+      const other = tgt.get(key);
+      if (other) {
+        matchedSource.add(new VGroup(...list));
+        matchedTarget.add(new VGroup(...other));
+      } else sourceOnly.add(...list);
+    }
+    for (const [key, list] of tgt) if (!src.has(key)) targetOnly.add(...list);
+    const anims: Animation[] = [];
+    if (matchedSource.submobjects.length) anims.push(new Transform(matchedSource, matchedTarget, animOpts));
+    if (transformMismatches && sourceOnly.submobjects.length && targetOnly.submobjects.length) {
+      anims.push(new Transform(sourceOnly, targetOnly, animOpts));
+    } else if (fadeTransformMismatches && sourceOnly.submobjects.length && targetOnly.submobjects.length) {
+      anims.push(new FadeTransform(sourceOnly, targetOnly, animOpts));
+    } else {
+      if (sourceOnly.submobjects.length) anims.push(new FadeOut(sourceOnly, {targetPosition: target, ...animOpts}));
+      if (targetOnly.submobjects.length) anims.push(new FadeIn(targetOnly, {targetPosition: mobject, ...animOpts}));
+    }
+    super(...anims, {});
+    this.mobject = mobject;
+    this.source = mobject;
+    this.targetMobject = target;
+    this.helpers = [matchedSource, sourceOnly, targetOnly];
+  }
+
+  public override cleanUp(scene: SceneLike): void {
+    super.cleanUp(scene);
+    scene.remove(this.source, ...this.helpers);
+    for (const part of this.source.getFamily()) scene.remove(part);
+    scene.add(this.targetMobject);
+  }
+}
+
+/** Morph the pieces of one mobject into the identically shaped pieces of another. */
+export class TransformMatchingShapes extends TransformMatchingBase {
+  public constructor(mobject: Mobject, target: Mobject, ...rest: any[]) {
+    const o = kw(rest, [], {});
+    super(mobject, target, m => m.familyMembersWithPoints(), shapeKey, o);
+  }
+}
+
+/** Morph the parts of one `MathTex` into the parts of another with the same TeX. */
+export class TransformMatchingTex extends TransformMatchingBase {
+  public constructor(mobject: Mobject, target: Mobject, ...rest: any[]) {
+    const o = kw(rest, [], {});
+    const parts = (m: Mobject): Mobject[] =>
+      m.submobjects.flatMap(s => ((s as any).texString !== undefined ? [s] : parts(s)));
+    super(mobject, target, parts, m => (m as any).texString ?? `part:${m.id}`, o);
+  }
+}
+
 // ------------------------------------------------------------------- .animate
 
 /**
@@ -962,3 +1167,4 @@ export function toAnimation(x: any): Animation {
 
 export {toHex, DOWN, sub};
 for (const klass of [Animation]) aliasSnake(klass.prototype);
+aliasFields(Animation.prototype, ['runTime', 'rateFunc', 'lagRatio', 'startingMobject', 'targetMobject', 'targetCopy']);

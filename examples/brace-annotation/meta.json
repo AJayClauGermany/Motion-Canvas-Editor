@@ -1,0 +1,7 @@
+{
+  "title": "Brace annotation",
+  "description": "Braces along a line with a text label and a formula label.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#braceannotation",
+  "order": 20
+}

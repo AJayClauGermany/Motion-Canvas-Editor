@@ -1,0 +1,7 @@
+{
+  "title": "Moving frame box",
+  "description": "A surrounding box moves from one term of the product rule to another.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#movingframebox",
+  "order": 90
+}

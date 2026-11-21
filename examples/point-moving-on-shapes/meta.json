@@ -1,0 +1,7 @@
+{
+  "title": "Point moving on shapes",
+  "description": "A dot grows a circle, moves along it and then rotates around another point.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#pointmovingonshapes",
+  "order": 40
+}

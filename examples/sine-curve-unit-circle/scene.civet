@@ -1,0 +1,86 @@
+from manim import *
+
+class SineCurveUnitCircle extends Scene
+  # contributed by heejin_park, https://infograph.tistory.com/230
+  construct()
+    @show_axis()
+    @show_circle()
+    @move_dot_and_draw_curve()
+    @wait()
+
+  show_axis()
+    x_start := np.array [-6, 0, 0]
+    x_end := np.array [6, 0, 0]
+
+    y_start := np.array [-4, -2, 0]
+    y_end := np.array [-4, 2, 0]
+
+    x_axis := Line x_start, x_end
+    y_axis := Line y_start, y_end
+
+    @add x_axis, y_axis
+    @add_x_labels()
+
+    @origin_point = np.array [-4, 0, 0]
+    @curve_start = np.array [-3, 0, 0]
+
+  add_x_labels()
+    x_labels := [
+      MathTex(r`\pi`), MathTex(r`2 \pi`),
+      MathTex(r`3 \pi`), MathTex(r`4 \pi`),
+    ]
+
+    for i of range len x_labels
+      x_labels[i].next_to np.array([-1 + 2 * i, 0, 0]), DOWN
+      @add x_labels[i]
+
+  show_circle()
+    circle := Circle radius: 1
+    circle.move_to @origin_point
+    @add circle
+    @circle = circle
+
+  move_dot_and_draw_curve()
+    orbit := @circle
+    origin_point := @origin_point
+
+    dot := Dot radius: 0.08, color: YELLOW
+    dot.move_to orbit.point_from_proportion(0)
+    @t_offset = 0
+    rate := 0.25
+
+    go_around_circle := (mob, dt) =>
+      @t_offset += dt * rate
+      # print(self.t_offset)
+      mob.move_to orbit.point_from_proportion(@t_offset % 1)
+
+    get_line_to_circle := =>
+      Line origin_point, dot.get_center(), color: BLUE
+
+    get_line_to_curve := =>
+      x := @curve_start[0] + @t_offset * 4
+      y := dot.get_center()[1]
+      Line dot.get_center(), np.array([x, y, 0]), color: YELLOW_A, stroke_width: 2
+
+    @curve = VGroup()
+    @curve.add Line(@curve_start, @curve_start)
+    get_curve := =>
+      last_line := @curve[-1]
+      x := @curve_start[0] + @t_offset * 4
+      y := dot.get_center()[1]
+      new_line := Line last_line.get_end(), np.array([x, y, 0]), color: YELLOW_D
+      @curve.add new_line
+
+      @curve
+
+    dot.add_updater go_around_circle
+
+    origin_to_circle_line := always_redraw get_line_to_circle
+    dot_to_curve_line := always_redraw get_line_to_curve
+    sine_curve_line := always_redraw get_curve
+
+    @add dot
+    @add orbit, origin_to_circle_line, dot_to_curve_line, sine_curve_line
+    @wait 8.5
+
+    dot.remove_updater go_around_circle

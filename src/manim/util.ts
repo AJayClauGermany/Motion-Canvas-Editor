@@ -60,6 +60,75 @@ export function color_gradient(colors: any[], n: number): string[] {
   return out;
 }
 
+export function invert_color(color: any): string {
+  const [r, g, b] = toRGB(color);
+  return toHex([1 - r / 255, 1 - g / 255, 1 - b / 255]);
+}
+/** Blend toward white (`lighter`) or black (`darker`), like `ManimColor.lighter()`. */
+export function lighter(color: any, blend = 0.2): string {
+  const [r, g, b] = toRGB(color);
+  const mix = (v: number) => (v + (255 - v) * blend) / 255;
+  return toHex([mix(r), mix(g), mix(b)]);
+}
+export function darker(color: any, blend = 0.2): string {
+  const [r, g, b] = toRGB(color);
+  const mix = (v: number) => (v * (1 - blend)) / 255;
+  return toHex([mix(r), mix(g), mix(b)]);
+}
+export function average_color(...colors: any[]): string {
+  const list = colors.flat().map(toRGB);
+  const mean = (i: number) => list.reduce((s, c) => s + c[i], 0) / list.length / 255;
+  return toHex([mean(0), mean(1), mean(2)]);
+}
+/** `[r, g, b]` floats in 0..1, as Manim's `color_to_rgb`. */
+export function color_to_rgb(color: any): number[] {
+  const [r, g, b] = toRGB(color);
+  return [r / 255, g / 255, b / 255];
+}
+export function rgb_to_color(rgb: number[]): string {
+  return toHex(rgb);
+}
+/** `ManimColor("#ff0000")` or `ManimColor([1, 0, 0])` → the hex string used here. */
+export function ManimColor(value: any): string {
+  return toHex(value);
+}
+
+/**
+ * Colours are plain hex strings in this implementation, so the handful of
+ * `ManimColor` methods that scenes use (`BLUE.lighter()`, `RED.interpolate(...)`)
+ * are provided as non-enumerable string methods.
+ */
+const colorMethods: Record<string, (this: string, ...args: any[]) => any> = {
+  lighter(blend = 0.2) {
+    return lighter(String(this), blend);
+  },
+  darker(blend = 0.2) {
+    return darker(String(this), blend);
+  },
+  interpolate(other: any, alpha: number) {
+    return lerpColor(String(this), other, alpha);
+  },
+  invert() {
+    return invert_color(String(this));
+  },
+  to_hex() {
+    return toHex(String(this));
+  },
+  to_rgb() {
+    return color_to_rgb(String(this));
+  },
+};
+for (const name of Object.keys(colorMethods)) {
+  if (!(name in String.prototype)) {
+    Object.defineProperty(String.prototype, name, {
+      value: colorMethods[name],
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+}
+
 export function isPlain(v: any): v is Record<string, any> {
   return (
     v !== null &&
@@ -106,14 +175,58 @@ export function splitKw(args: any[]): [any[], Record<string, any>] {
   return [args, {}];
 }
 
-/** Give every camelCase method/accessor on a prototype a snake_case alias. */
+/**
+ * Give every camelCase method/accessor on a prototype a snake_case alias.
+ *
+ * Aliases dispatch by name at call time, so a subclass that overrides
+ * `getEnd` also changes `get_end`. Method aliases come back bound to their
+ * object: like a Python bound method, `dot.get_center` can be handed around
+ * (`TracedPath(dot.get_center)`, `always(label.next_to, dot)`).
+ */
 export function aliasSnake(proto: object) {
   for (const name of Object.getOwnPropertyNames(proto)) {
     if (name === 'constructor' || !/[A-Z]/.test(name) || name.startsWith('_')) continue;
     const alias = snake(name);
     if (alias in proto) continue;
     const desc = Object.getOwnPropertyDescriptor(proto, name)!;
-    Object.defineProperty(proto, alias, desc);
+    if (typeof desc.value === 'function') {
+      Object.defineProperty(proto, alias, {
+        get(this: any) {
+          return this[name].bind(this);
+        },
+        set(this: any, value: any) {
+          Object.defineProperty(this, alias, {value, writable: true, configurable: true, enumerable: true});
+        },
+        configurable: true,
+      });
+    } else if (desc.get || desc.set) {
+      Object.defineProperty(proto, alias, {
+        get(this: any) {
+          return this[name];
+        },
+        set(this: any, value: any) {
+          this[name] = value;
+        },
+        configurable: true,
+      });
+    }
+  }
+}
+
+/** snake_case accessors for camelCase instance fields (`x_range` → `xRange`). */
+export function aliasFields(proto: object, fields: string[]) {
+  for (const field of fields) {
+    const alias = snake(field);
+    if (alias === field || alias in proto) continue;
+    Object.defineProperty(proto, alias, {
+      get(this: any) {
+        return this[field];
+      },
+      set(this: any, value: any) {
+        this[field] = value;
+      },
+      configurable: true,
+    });
   }
 }
 
@@ -129,10 +242,23 @@ export function callable<T extends new (...args: any[]) => any>(klass: T): T & (
   }) as any;
 }
 
+let sceneFrame = /scene-source\.js:(\d+)/;
+
+/**
+ * Tell `callerLine` how frames of the evaluated scene module look in a stack
+ * trace. The default matches the `sourceURL` the editor gives scene code;
+ * engines that ignore `sourceURL` get the URL the code was loaded from.
+ */
+export function setSceneSourceMarker(marker: string): void {
+  sceneFrame = new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:(\\d+)`);
+}
+
+export const sceneFrameMarker = (): RegExp => sceneFrame;
+
 /** Find the user's source line (in compiled scene code) for the current call. */
 export function callerLine(): number | undefined {
   const stack = new Error().stack;
   if (!stack) return undefined;
-  const m = /scene-source\.js:(\d+)/.exec(stack);
+  const m = sceneFrame.exec(stack);
   return m ? parseInt(m[1], 10) : undefined;
 }

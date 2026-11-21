@@ -59,7 +59,8 @@ describe('pythonToCivet', () => {
   });
 
   test('strings: raw, f-strings, and code-looking text left alone', () => {
-    expect(line('m = MathTex(r"\\frac{a}{b}")')).toBe('m := MathTex("\\\\frac{a}{b}")');
+    expect(line('m = MathTex(r"\\frac{a}{b}")')).toBe('m := MathTex(r`\\frac{a}{b}`)');
+    expect(line('m = MathTex(r"cost: ${x}")')).toBe('m := MathTex("cost: ${x}")');
     expect(line('t = Text(f"v = {x:.2f} and {name}")')).toBe('t := Text(`v = ${(x).toFixed(2)} and ${name}`)');
     expect(line('t = Text("self.play(x=1) # not a comment")')).toBe('t := Text("self.play(x=1) # not a comment")');
   });

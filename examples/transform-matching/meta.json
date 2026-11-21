@@ -1,0 +1,6 @@
+{
+  "title": "Transforms between shapes and equations",
+  "description": "Feature tour: ReplacementTransform, TransformFromCopy, TransformMatchingTex and FadeTransform on shapes and formulas.",
+  "style": "manim",
+  "order": 210
+}

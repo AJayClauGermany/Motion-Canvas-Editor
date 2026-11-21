@@ -1,0 +1,7 @@
+{
+  "title": "Rotation updater",
+  "description": "Updaters that use dt rotate a line forth and back.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#rotationupdater",
+  "order": 100
+}

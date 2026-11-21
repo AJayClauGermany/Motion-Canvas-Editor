@@ -92,3 +92,36 @@ export const ease_out_elastic: RateFunc = t => {
   const c4 = (2 * Math.PI) / 3;
   return t === 0 ? 0 : t === 1 ? 1 : 2 ** (-10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
 };
+
+export const ease_in_quart: RateFunc = t => t ** 4;
+export const ease_out_quart: RateFunc = t => 1 - (1 - t) ** 4;
+export const ease_in_out_quart: RateFunc = t => (t < 0.5 ? 8 * t ** 4 : 1 - (-2 * t + 2) ** 4 / 2);
+export const ease_in_quint: RateFunc = t => t ** 5;
+export const ease_out_quint: RateFunc = t => 1 - (1 - t) ** 5;
+export const ease_in_out_quint: RateFunc = t => (t < 0.5 ? 16 * t ** 5 : 1 - (-2 * t + 2) ** 5 / 2);
+export const ease_in_out_expo: RateFunc = t =>
+  t === 0 ? 0 : t === 1 ? 1 : t < 0.5 ? 2 ** (20 * t - 10) / 2 : (2 - 2 ** (-20 * t + 10)) / 2;
+export const ease_in_circ: RateFunc = t => 1 - Math.sqrt(1 - t * t);
+export const ease_out_circ: RateFunc = t => Math.sqrt(1 - (t - 1) ** 2);
+export const ease_in_out_circ: RateFunc = t =>
+  t < 0.5 ? (1 - Math.sqrt(1 - (2 * t) ** 2)) / 2 : (Math.sqrt(1 - (-2 * t + 2) ** 2) + 1) / 2;
+export const ease_in_out_back: RateFunc = t => {
+  const c2 = 1.70158 * 1.525;
+  return t < 0.5
+    ? ((2 * t) ** 2 * ((c2 + 1) * 2 * t - c2)) / 2
+    : ((2 * t - 2) ** 2 * ((c2 + 1) * (t * 2 - 2) + c2) + 2) / 2;
+};
+export const ease_in_elastic: RateFunc = t => {
+  const c4 = (2 * Math.PI) / 3;
+  return t === 0 ? 0 : t === 1 ? 1 : -(2 ** (10 * t - 10)) * Math.sin((t * 10 - 10.75) * c4);
+};
+export const ease_in_out_elastic: RateFunc = t => {
+  const c5 = (2 * Math.PI) / 4.5;
+  if (t === 0 || t === 1) return t;
+  return t < 0.5
+    ? -(2 ** (20 * t - 10) * Math.sin((20 * t - 11.125) * c5)) / 2
+    : (2 ** (-20 * t + 10) * Math.sin((20 * t - 11.125) * c5)) / 2 + 1;
+};
+export const ease_in_bounce: RateFunc = t => 1 - ease_out_bounce(1 - t);
+export const ease_in_out_bounce: RateFunc = t =>
+  t < 0.5 ? (1 - ease_out_bounce(1 - 2 * t)) / 2 : (1 + ease_out_bounce(2 * t - 1)) / 2;

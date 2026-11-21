@@ -9,7 +9,7 @@ import {Animation, toAnimation, Wait} from './animation';
 import {config} from './constants';
 import {Rectangle} from './geometry';
 import {MobNode, Mobject, resetMobjectIds} from './mobject';
-import {aliasSnake, callerLine, splitKw} from './util';
+import {aliasFields, aliasSnake, callerLine, kw, splitKw} from './util';
 
 export interface Segment {
   kind: 'play' | 'wait';
@@ -76,6 +76,30 @@ class Camera {
   public get frame_center() {
     return this.frame.getCenter();
   }
+  /**
+   * Fit the frame around `mobjects` (MovingCamera.auto_zoom). Returns the
+   * frame, or an `.animate` builder when `animate` is true (the default).
+   */
+  public autoZoom(mobjects: Mobject | Mobject[], ...rest: any[]): any {
+    const o = kw(rest, ['margin', 'onlyMobjectsInFrame', 'animate'], {margin: 0, animate: true});
+    const list = Array.isArray(mobjects) ? mobjects : [mobjects];
+    let b: number[] | null = null;
+    for (const m of list) {
+      const mb = m.getBounds();
+      b = b ? [Math.min(b[0], mb[0]), Math.min(b[1], mb[1]), Math.max(b[2], mb[2]), Math.max(b[3], mb[3])] : [...mb];
+    }
+    if (!b) return this.frame;
+    const width = b[2] - b[0] + o.margin;
+    const height = b[3] - b[1] + o.margin;
+    const ratio = config.frameWidth / config.frameHeight;
+    const target = Math.max(width, height * ratio, 1e-6);
+    const center = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2, 0];
+    const subject: any = o.animate ? (this.frame as any).animate : this.frame;
+    return subject.setWidth(target).moveTo(center);
+  }
+  public auto_zoom(mobjects: Mobject | Mobject[], ...rest: any[]): any {
+    return this.autoZoom(mobjects, ...rest);
+  }
 }
 
 export class Scene {
@@ -132,6 +156,15 @@ export class Scene {
       this.mobjects = removeFrom(this.mobjects, target);
       this.foregroundMobjects = this.foregroundMobjects.filter(m => m !== target);
     }
+    return this;
+  }
+  /** Swap one mobject for another, keeping its place in the drawing order. */
+  public replace(old: Mobject, replacement: Mobject): this {
+    const at = this.mobjects.indexOf(old);
+    if (at < 0) return this.remove(old).add(replacement);
+    const list = this.mobjects.filter(m => m !== replacement);
+    list[list.indexOf(old)] = replacement;
+    this.mobjects = list;
     return this;
   }
   public clear(): this {
@@ -213,15 +246,43 @@ export class Scene {
 
   public updateMobjects(dt: number): void {
     for (const m of [...this.mobjects]) m.update(dt);
+    // The camera frame follows its updaters even when it was never `add`ed.
+    const frame = this.camera.frame;
+    if (frame.updaters.length && !this.mobjects.includes(frame)) frame.update(dt);
+    for (const u of this.updaters) u(dt);
+  }
+
+  /** Scene-level updaters: `self.add_updater(lambda dt: ...)`. */
+  public updaters: ((dt: number) => void)[] = [];
+  public addUpdater(fn: (dt: number) => void): this {
+    this.updaters.push(fn);
+    return this;
+  }
+  public removeUpdater(fn: (dt: number) => void): this {
+    this.updaters = this.updaters.filter(u => u !== fn);
+    return this;
   }
 
   // ------------------------------------------------------------- rendering
 
   /** Reconcile the Canvas Commons node list with the mobjects on screen. */
   public sync(): void {
-    const leaves: Mobject[] = [];
+    let leaves: Mobject[] = [];
     for (const m of this.mobjects) {
       for (const f of m.getFamily()) if (f.hasPoints() && f.name !== 'CameraFrame') leaves.push(f);
+    }
+    // A mobject reachable twice (say through `text[0...3]` and `text`) is
+    // painted once, at its front-most position.
+    if (new Set(leaves).size !== leaves.length) {
+      const seen = new Set<Mobject>();
+      const unique: Mobject[] = [];
+      for (let i = leaves.length - 1; i >= 0; i--) {
+        if (!seen.has(leaves[i])) {
+          seen.add(leaves[i]);
+          unique.push(leaves[i]);
+        }
+      }
+      leaves = unique.reverse();
     }
     const foreground = new Set(this.foregroundMobjects.flatMap(m => m.getFamily()));
     const rank = (m: Mobject) => m.zIndex + (foreground.has(m) ? 1e6 : 0);
@@ -302,3 +363,4 @@ export function makeManimScene(SceneClass: new () => Scene) {
 }
 
 aliasSnake(Scene.prototype);
+aliasFields(Scene.prototype, ['foregroundMobjects']);

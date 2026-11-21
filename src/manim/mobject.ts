@@ -8,12 +8,16 @@ import {Node} from '@canvas-commons/2d';
 import {BBox} from '@canvas-commons/core';
 import {
   alignPoints,
-  bezierPoint,
+  changeAnchorMode,
   cornersToPoints,
+  curveLengths,
+  insertCurves,
   lerpPoints,
   lineToCubic,
   partialPoints,
+  pointAtProportion,
   Points,
+  smoothPoints,
   splitSubpaths,
 } from './bezier';
 import {
@@ -165,6 +169,22 @@ export class Mobject {
     return this.submobjects.length;
   }
 
+  /** Reverse the order of the submobjects. */
+  public invert(recursive = false): this {
+    this.submobjects.reverse();
+    if (recursive) for (const s of this.submobjects) s.invert(true);
+    this._familyChanged();
+    return this;
+  }
+
+  /** Sort submobjects by a function of their centre (default: x). */
+  public sort(pointToNum: (p: Vec) => number = p => p[0], submobFunc?: (m: Mobject) => number): this {
+    const key = submobFunc ?? ((m: Mobject) => pointToNum(m.getCenter()));
+    this.submobjects.sort((a, b) => key(a) - key(b));
+    this._familyChanged();
+    return this;
+  }
+
   public at(i: number): Mobject | undefined {
     return this.submobjects.at(i);
   }
@@ -218,6 +238,8 @@ export class Mobject {
     return null;
   }
   public _affine(_op: AffineOp): void {}
+  /** Map every point of this leaf through `fn` (non-linear transforms). */
+  public _applyFunction(_fn: (p: Vec) => Vec): void {}
   public _draw(_ctx: CanvasRenderingContext2D, _unit: number): void {}
   /** Copy leaf data (geometry + style) from another mobject of the same kind. */
   public _copyData(from: Mobject): void {
@@ -355,8 +377,27 @@ export class Mobject {
     return this.rotate(angle, {aboutPoint: ORIGIN});
   }
 
-  public flip(axis: Vec = UP, ...rest: any[]): this {
-    const o = kw(rest, [], {aboutPoint: undefined});
+  /** Apply an arbitrary point function to every point (handles included). */
+  public applyFunction(fn: (p: Vec) => Vec): this {
+    for (const m of this.getFamily()) m._applyFunction(fn);
+    return this;
+  }
+
+  /** Apply a 2x2 or 3x3 matrix about `about_point` (default: the origin). */
+  public applyMatrix(matrix: number[][], ...rest: any[]): this {
+    const o = kw(rest, [], {aboutPoint: ORIGIN});
+    const [ax, ay] = o.aboutPoint;
+    const [[a, b], [c, d]] = matrix;
+    return this.applyFunction(p => {
+      const x = p[0] - ax;
+      const y = p[1] - ay;
+      return [ax + a * x + b * y, ay + c * x + d * y, 0];
+    });
+  }
+
+  public flip(...args: any[]): this {
+    const o = kw(args, ['axis'], {axis: UP, aboutPoint: undefined});
+    const axis: Vec = o.axis;
     const about = o.aboutPoint ?? this.getCenter();
     const horizontal = Math.abs(axis[1]) >= Math.abs(axis[0]);
     return this.applyAffine({
@@ -383,6 +424,52 @@ export class Mobject {
     const h = this.getHeight();
     return h === 0 ? this : this.stretch(height / h, 1, ...rest);
   }
+  /** Take the size (and position) of `mob`. */
+  public replace(mob: Mobject, ...rest: any[]): this {
+    const o = kw(rest, ['dimToMatch', 'stretch'], {dimToMatch: 0, stretch: false});
+    if (o.stretch) {
+      this.stretchToFitWidth(mob.getWidth());
+      this.stretchToFitHeight(mob.getHeight());
+    } else if (o.dimToMatch === 1) {
+      this.scaleToFitHeight(mob.getHeight());
+    } else {
+      this.scaleToFitWidth(mob.getWidth());
+    }
+    return this.shift(sub(mob.getCenter(), this.getCenter()));
+  }
+  public surround(mob: Mobject, ...rest: any[]): this {
+    const o = kw(rest, ['dimToMatch', 'stretch', 'buff'], {dimToMatch: 0, stretch: false, buff: 0.25});
+    this.replace(mob, o.dimToMatch, o.stretch);
+    const length = o.dimToMatch === 1 ? mob.getHeight() : mob.getWidth();
+    return length === 0 ? this : this.scale((length + o.buff) / length);
+  }
+  public matchWidth(mob: Mobject, ...rest: any[]): this {
+    return this.scaleToFitWidth(mob.getWidth(), ...rest);
+  }
+  public matchHeight(mob: Mobject, ...rest: any[]): this {
+    return this.scaleToFitHeight(mob.getHeight(), ...rest);
+  }
+  public matchX(mob: Mobject, direction: Vec = ORIGIN): this {
+    return this.shift([mob.getX(direction) - this.getX(direction), 0, 0]);
+  }
+  public matchY(mob: Mobject, direction: Vec = ORIGIN): this {
+    return this.shift([0, mob.getY(direction) - this.getY(direction), 0]);
+  }
+  public matchColor(mob: Mobject): this {
+    return this.setColor(mob.getColor());
+  }
+  /** Copy the outline of `mob`, family member by family member. */
+  public matchPoints(mob: Mobject): this {
+    const mine = this.getFamily();
+    const theirs = mob.getFamily();
+    for (let i = 0; i < mine.length && i < theirs.length; i++) {
+      const a = mine[i];
+      const b = theirs[i];
+      if (a instanceof VMobject && b instanceof VMobject) a.points = b.points;
+    }
+    return this;
+  }
+
   public setWidth(width: number, ...rest: any[]): this {
     return this.scaleToFitWidth(width, ...rest);
   }
@@ -390,21 +477,24 @@ export class Mobject {
     return this.scaleToFitHeight(height, ...rest);
   }
 
-  public moveTo(target: Mobject | Vec, alignedEdge: Vec = ORIGIN): this {
+  public moveTo(target: Mobject | Vec, ...rest: any[]): this {
+    const o = kw(rest, ['alignedEdge'], {alignedEdge: ORIGIN});
     const point =
-      target instanceof Mobject ? target.getCriticalPoint(alignedEdge) : target;
-    return this.shift(sub(point, this.getCriticalPoint(alignedEdge)));
+      target instanceof Mobject ? target.getCriticalPoint(o.alignedEdge) : target;
+    return this.shift(sub(point, this.getCriticalPoint(o.alignedEdge)));
   }
 
   public center(): this {
     return this.shift(mul(this.getCenter(), -1));
   }
 
-  public setX(x: number, direction: Vec = ORIGIN): this {
-    return this.shift([x - this.getX(direction), 0, 0]);
+  public setX(x: number, ...rest: any[]): this {
+    const o = kw(rest, ['direction'], {direction: ORIGIN});
+    return this.shift([x - this.getX(o.direction), 0, 0]);
   }
-  public setY(y: number, direction: Vec = ORIGIN): this {
-    return this.shift([0, y - this.getY(direction), 0]);
+  public setY(y: number, ...rest: any[]): this {
+    const o = kw(rest, ['direction'], {direction: ORIGIN});
+    return this.shift([0, y - this.getY(o.direction), 0]);
   }
 
   public nextTo(target: Mobject | Vec, ...rest: any[]): this {
@@ -421,7 +511,8 @@ export class Mobject {
     return this.shift(add(sub(targetPoint, pointToAlign), mul(o.direction, o.buff)));
   }
 
-  public alignTo(target: Mobject | Vec, direction: Vec = ORIGIN): this {
+  public alignTo(target: Mobject | Vec, ...rest: any[]): this {
+    const direction: Vec = kw(rest, ['direction'], {direction: ORIGIN}).direction;
     const point =
       target instanceof Mobject ? target.getCriticalPoint(direction) : target;
     const mine = this.getCriticalPoint(direction);
@@ -432,11 +523,26 @@ export class Mobject {
     ]);
   }
 
-  public toEdge(edge: Vec = LEFT, buff: number = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
-    return this.alignOnBorder(edge, buff);
+  public toEdge(...args: any[]): this {
+    const o = kw(args, ['edge', 'buff'], {edge: LEFT, buff: DEFAULT_MOBJECT_TO_EDGE_BUFFER});
+    return this.alignOnBorder(o.edge, o.buff);
   }
-  public toCorner(corner: Vec = DL, buff: number = DEFAULT_MOBJECT_TO_EDGE_BUFFER): this {
-    return this.alignOnBorder(corner, buff);
+  public toCorner(...args: any[]): this {
+    const o = kw(args, ['corner', 'buff'], {corner: DL, buff: DEFAULT_MOBJECT_TO_EDGE_BUFFER});
+    return this.alignOnBorder(o.corner, o.buff);
+  }
+  /** Nudge the mobject back inside the frame if it sticks out. */
+  public shiftOntoScreen(...rest: any[]): this {
+    const o = kw(rest, [], {buff: DEFAULT_MOBJECT_TO_EDGE_BUFFER});
+    const fw = config.frameWidth / 2;
+    const fh = config.frameHeight / 2;
+    for (const v of [UP, [0, -1, 0], LEFT, RIGHT] as Vec[]) {
+      const dim = v[0] !== 0 ? 0 : 1;
+      const max = (dim === 0 ? fw : fh) - o.buff;
+      const edge = this.getCriticalPoint(v);
+      if (edge[dim] * v[dim] > max) this.alignOnBorder(v, o.buff);
+    }
+    return this;
   }
   protected alignOnBorder(direction: Vec, buff: number): this {
     const sx = Math.sign(direction[0]);
@@ -468,13 +574,14 @@ export class Mobject {
   }
 
   public arrangeInGrid(...rest: any[]): this {
-    const o = kw(rest, ['rows', 'cols', 'buff'], {
+    const o: Record<string, any> = kw(rest, ['rows', 'cols', 'buff'], {
       rows: undefined,
       cols: undefined,
       buff: DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
     });
     const n = this.submobjects.length;
-    let {rows, cols} = o;
+    let rows: number = o.rows;
+    let cols: number = o.cols;
     if (!rows && !cols) cols = Math.ceil(Math.sqrt(n));
     if (!cols) cols = Math.ceil(n / rows);
     if (!rows) rows = Math.ceil(n / cols);
@@ -502,9 +609,22 @@ export class Mobject {
     return this.moveTo(center);
   }
 
+  /** `mob.set(width=3, color=RED)`: assign attributes by name, chainable. */
+  public set(...args: any[]): this {
+    const [, o] = splitKw(args);
+    for (const key of Object.keys(o)) {
+      if (key === 'color') this.setColor(o[key]);
+      else (this as any)[key] = o[key];
+    }
+    return this;
+  }
+
   public setZIndex(z: number): this {
     for (const m of this.getFamily()) m.zIndex = z;
     return this;
+  }
+  public getZIndex(): number {
+    return this.zIndex;
   }
 
   // ---------------------------------------------------------------- style
@@ -537,12 +657,35 @@ export class Mobject {
     return this;
   }
 
+  /** As in Manim, this sets fill *and* stroke opacity (so outlines get filled). */
   public setOpacity(opacity: number): this {
     for (const m of this.getFamily()) {
-      m.fillOpacity = m._fillsByDefault() || m.fillOpacity > 0 ? opacity : m.fillOpacity;
+      m.fillOpacity = opacity;
       m.strokeOpacity = opacity;
     }
     return this;
+  }
+
+  public setStyle(...args: any[]): this {
+    const o = kw(args, [], {});
+    if (o.fillColor !== undefined || o.fillOpacity !== undefined) this.setFill(o.fillColor, o.fillOpacity);
+    if (o.strokeColor !== undefined || o.strokeWidth !== undefined || o.strokeOpacity !== undefined) {
+      this.setStroke(o.strokeColor, o.strokeWidth, o.strokeOpacity);
+    }
+    if (o.color !== undefined) this.setColor(o.color);
+    return this;
+  }
+  public getFillColor(): string {
+    return (this.hasPoints() ? this : (this.familyMembersWithPoints()[0] ?? this)).fillColor;
+  }
+  public getStrokeColor(): string {
+    return (this.hasPoints() ? this : (this.familyMembersWithPoints()[0] ?? this)).strokeColor;
+  }
+  public getFillOpacity(): number {
+    return (this.hasPoints() ? this : (this.familyMembersWithPoints()[0] ?? this)).fillOpacity;
+  }
+  public getStrokeWidth(): number {
+    return (this.hasPoints() ? this : (this.familyMembersWithPoints()[0] ?? this)).strokeWidth;
   }
 
   public _fillsByDefault(): boolean {
@@ -699,6 +842,16 @@ for (let i = 0; i < 256; i++) {
   });
 }
 
+/** Python's `group[-1]`. */
+for (let i = 1; i <= 16; i++) {
+  Object.defineProperty(Mobject.prototype, String(-i), {
+    get(this: Mobject) {
+      return this.submobjects[this.submobjects.length - i];
+    },
+    configurable: true,
+  });
+}
+
 export interface VMobject {
   [index: number]: Mobject;
 }
@@ -773,6 +926,64 @@ export class VMobject extends Mobject {
     return (this as any)._pen ?? this.points[this.points.length - 1] ?? [0, 0, 0];
   }
 
+  /** Smooth curve through the given points (Manim's `set_points_smoothly`). */
+  public setPointsSmoothly(corners: Vec[]): this {
+    this.points = smoothPoints(corners.map(p => [p[0], p[1], 0]));
+    return this;
+  }
+  public makeSmooth(): this {
+    for (const m of this.familyMembersWithPoints()) {
+      if (m instanceof VMobject) m.points = changeAnchorMode(m.points, 'smooth');
+    }
+    return this;
+  }
+  public makeJagged(): this {
+    for (const m of this.familyMembersWithPoints()) {
+      if (m instanceof VMobject) m.points = changeAnchorMode(m.points, 'jagged');
+    }
+    return this;
+  }
+  public changeAnchorMode(mode: 'smooth' | 'jagged'): this {
+    return mode === 'smooth' ? this.makeSmooth() : this.makeJagged();
+  }
+  /** Subdivide so the outline has `n` more curves (same shape). */
+  public insertNCurves(n: number): this {
+    this.points = insertCurves(this.points, n);
+    return this;
+  }
+  public appendPoints(points: Points): this {
+    this.points = [...this.points, ...points];
+    return this;
+  }
+  public getPoints(): Points {
+    return this.points;
+  }
+  public getLastPoint(): Vec {
+    return this.points[this.points.length - 1];
+  }
+  public getStartAndEnd(): [Vec, Vec] {
+    return [this.getStart(), this.getEnd()];
+  }
+  public getSubpaths(): Points[] {
+    return splitSubpaths(this.points);
+  }
+  public getArcLength(): number {
+    return curveLengths(this.points).total;
+  }
+
+  /** Scale and rotate about the start so the outline runs from `start` to `end`. */
+  public putStartAndEndOn(start: Vec, end: Vec): this {
+    const s0 = this.getStart();
+    const e0 = this.getEnd();
+    const cur = sub(e0, s0);
+    const target = sub(end, start);
+    const curLen = Math.hypot(cur[0], cur[1]);
+    if (curLen < 1e-9) return this.shift(sub(start, s0));
+    this.scale(Math.hypot(target[0], target[1]) / curLen, {aboutPoint: s0});
+    this.rotate(Math.atan2(target[1], target[0]) - Math.atan2(cur[1], cur[0]), {aboutPoint: s0});
+    return this.shift(sub(start, s0));
+  }
+
   public getNumCurves(): number {
     return this.points.length / 4;
   }
@@ -793,30 +1004,7 @@ export class VMobject extends Mobject {
     return out;
   }
   public pointFromProportion(alpha: number): Vec {
-    const n = this.getNumCurves();
-    if (n === 0) return this.getCenter();
-    // Arc-length parametrisation over curve chord lengths.
-    const lengths: number[] = [];
-    let total = 0;
-    for (let i = 0; i < n; i++) {
-      let l = 0;
-      let prev = this.points[i * 4];
-      for (let k = 1; k <= 8; k++) {
-        const p = bezierPoint(this.points, i * 4, k / 8);
-        l += Math.hypot(p[0] - prev[0], p[1] - prev[1]);
-        prev = p;
-      }
-      lengths.push(l);
-      total += l;
-    }
-    let target = Math.max(0, Math.min(1, alpha)) * total;
-    for (let i = 0; i < n; i++) {
-      if (target <= lengths[i] || i === n - 1) {
-        return bezierPoint(this.points, i * 4, lengths[i] === 0 ? 0 : Math.min(1, target / lengths[i]));
-      }
-      target -= lengths[i];
-    }
-    return this.getEnd();
+    return pointAtProportion(this.points, alpha) ?? this.getCenter();
   }
   public pointwiseBecomePartial(other: VMobject, a: number, b: number): this {
     this.points = partialPoints(other.points, a, b);
@@ -873,11 +1061,15 @@ export class VMobject extends Mobject {
     if (self._pen) self._pen = undefined;
   }
 
-  public applyFunction(fn: (p: Vec) => Vec): this {
-    for (const m of this.getFamily()) {
-      if (m instanceof VMobject) m.points = m.points.map(p => fn(p));
+  public override _applyFunction(fn: (p: Vec) => Vec): void {
+    const pts = this.points;
+    if (pts.length === 0) return;
+    const out: Points = new Array(pts.length);
+    for (let i = 0; i < pts.length; i++) {
+      const p = fn(pts[i]);
+      out[i] = [p[0], p[1], 0];
     }
-    return this;
+    this.points = out;
   }
 
   public override _copyData(from: Mobject): void {

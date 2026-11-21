@@ -13,7 +13,7 @@ const rows: [string, string, string][] = [
   ['Loop', 'for i in range(3):', 'for i of [0...3]'],
   ['List build', '[Dot() for _ in range(5)]', 'for _ of [0...5]\n  Dot()'],
   ['Unpack', 'VGroup(*dots)', 'VGroup ...dots'],
-  ['Raw TeX', 'MathTex(r"\\frac{a}{b}")', 'MathTex "\\\\frac{a}{b}"'],
+  ['Raw TeX', 'MathTex(r"\\frac{a}{b}")', 'MathTex r`\\frac{a}{b}`'],
   ['Comment', '# note', '# note'],
 ];
 

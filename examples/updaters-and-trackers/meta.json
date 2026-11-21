@@ -1,0 +1,6 @@
+{
+  "title": "Updaters and trackers",
+  "description": "Feature tour: a ValueTracker drives always_redraw mobjects and a DecimalNumber that follows a dot.",
+  "style": "manim",
+  "order": 220
+}

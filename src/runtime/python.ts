@@ -94,9 +94,11 @@ function convertString(literal: string): string {
       .replace(//g, '}');
     return '`' + body + '`';
   }
-  if (raw) body = body.replace(/\\/g, '\\\\');
-  if (quote.length === 3) {
-    return quote + body + quote;
+  if (raw) {
+    // r"\frac{a}{b}" → r`\frac{a}{b}` (the `r` tag is String.raw), unless the
+    // text contains something a template literal would interpret.
+    if (!/`|\$\{/.test(body) && !body.endsWith('\\')) return 'r`' + body + '`';
+    body = body.replace(/\\/g, '\\\\');
   }
   return quote + body + quote;
 }

@@ -1,0 +1,7 @@
+{
+  "title": "Manim CE logo",
+  "description": "The Manim Community logo: a blackboard-bold M over a circle, square and triangle.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#manimcelogo",
+  "order": 10
+}

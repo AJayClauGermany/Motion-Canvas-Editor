@@ -1,0 +1,7 @@
+{
+  "title": "Vector arrow",
+  "description": "An arrow from the origin on a number plane, with labelled end points.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#vectorarrow",
+  "order": 30
+}

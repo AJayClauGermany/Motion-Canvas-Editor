@@ -1,0 +1,7 @@
+{
+  "title": "Following graph camera",
+  "description": "The camera zooms in and follows a dot along a sine curve.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#followinggraphcamera",
+  "order": 160
+}

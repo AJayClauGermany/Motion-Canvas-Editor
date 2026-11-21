@@ -218,6 +218,7 @@ function Scrubber() {
 export function Timeline() {
   const ed = useEditor();
   const empty = createMemo(() => !ed.timeline() || ed.timeline()!.segments.length === 0);
+  const isManim = createMemo(() => ed.scenes().find(s => s.name === ed.activeScene())?.kind === 'manim');
   return (
     <section class="pane timeline-pane" data-style={ed.settings.timeline}>
       <Splitter variable="--timeline-h" edge="top" min={90} max={520} label="Timeline height" />
@@ -227,8 +228,18 @@ export function Timeline() {
           <div class="tl-empty">
             <Scrubber />
             <p class="muted">
-              No steps recorded. Manim-style scenes get one step per <code>play</code>/<code>wait</code>; native Canvas
-              Commons scenes only have the scrubber.
+              <Show
+                when={isManim()}
+                fallback={
+                  <>
+                    Native Canvas Commons scenes have no steps to list, only the scrubber. Manim-style scenes get one
+                    step per <code>play</code>/<code>wait</code>.
+                  </>
+                }
+              >
+                A still image: this scene only adds mobjects. Each <code>@play</code> or <code>@wait</code> you add
+                becomes a step here.
+              </Show>
             </p>
           </div>
         }

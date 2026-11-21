@@ -1,0 +1,7 @@
+{
+  "title": "Moving angle",
+  "description": "An angle marker and its label follow a rotating line driven by a ValueTracker.",
+  "style": "manim",
+  "source": "https://docs.manim.community/en/stable/examples.html#movingangle",
+  "order": 60
+}

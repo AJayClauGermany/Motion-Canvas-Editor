@@ -12,8 +12,12 @@ export const NORMAL = 'normal';
 export const BOLD = 'bold';
 export const ITALIC = 'italic';
 
-/** Em size, in Manim units, of text at `font_size` 1. */
-export const TEXT_EM_PER_FONT_SIZE = 0.6 / 48;
+/**
+ * Em size, in Manim units, of text at `font_size` 1. Manim renders Pango text
+ * at `font_size / 4.8` points (96 dpi, so 4/3 SVG units per point) and scales
+ * the result by 0.05.
+ */
+export const TEXT_EM_PER_FONT_SIZE = ((4 / 3) * 0.05) / 4.8;
 
 const MEASURE_PX = 200;
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -99,6 +103,11 @@ export class Glyph extends Mobject {
       this.pos = rotate(this.pos, op.angle, op.about);
       this.rot += op.angle;
     }
+  }
+
+  public override _applyFunction(fn: (p: Vec) => Vec): void {
+    const p = fn(this.pos);
+    this.pos = [p[0], p[1], 0];
   }
 
   public override _copyData(from: Mobject): void {
@@ -259,13 +268,6 @@ export class Paragraph extends Text {
     const o = kw(args, [], {});
     const lines = args.filter(a => typeof a === 'string');
     super(lines.join('\n'), o);
-  }
-}
-
-export class Title extends Text {
-  public constructor(...args: any[]) {
-    super(...args);
-    this.toEdge([0, 1, 0]);
   }
 }
 

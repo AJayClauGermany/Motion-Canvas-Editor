@@ -1,0 +1,10 @@
+from manim import *
+
+class MovingAround extends Scene
+  construct()
+    square := Square color: BLUE, fill_opacity: 1
+
+    @play square.animate.shift LEFT
+    @play square.animate.set_fill ORANGE
+    @play square.animate.scale 0.3
+    @play square.animate.rotate 0.4

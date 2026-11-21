@@ -111,7 +111,7 @@ export const __op = {
       return broadcast(a, b, (x, y) => x / y);
     return a / b;
   },
-  neg(a: any) {
+  neg(a: any): any {
     if (Array.isArray(a)) return a.map((x: any) => __op.neg(x));
     return -a;
   },

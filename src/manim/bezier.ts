@@ -49,6 +49,157 @@ export function arcPoints(
   return out;
 }
 
+/**
+ * Handles for a smooth curve through `anchors` (Manim's
+ * `get_smooth_cubic_bezier_handle_points`): a C2 cubic spline, natural at the
+ * ends of an open path and periodic for a closed one. Returns cubic points.
+ */
+export function smoothPoints(anchors: Vec[]): Points {
+  const n = anchors.length - 1;
+  if (n < 1) return [];
+  if (n === 1) return lineToCubic(anchors[0], anchors[1]);
+  const closed = eq(anchors[0], anchors[n], 1e-9);
+  const h1: Vec[] = new Array(n);
+  const h2: Vec[] = new Array(n);
+  for (let k = 0; k < 2; k++) {
+    const P = (i: number) => anchors[i][k];
+    let x: number[];
+    if (closed && n > 2) {
+      // Periodic system: x[i-1] + 4 x[i] + x[i+1] = 4 P[i] + 2 P[i+1].
+      const rhs = new Array(n);
+      for (let i = 0; i < n; i++) rhs[i] = 4 * P(i) + 2 * P(i + 1);
+      x = solveCyclic(n, rhs);
+    } else {
+      // Natural spline, solved with the Thomas algorithm.
+      const a = new Array(n).fill(1);
+      const b = new Array(n).fill(4);
+      const c = new Array(n).fill(1);
+      const d = new Array(n);
+      b[0] = 2;
+      d[0] = P(0) + 2 * P(1);
+      for (let i = 1; i < n - 1; i++) d[i] = 4 * P(i) + 2 * P(i + 1);
+      a[n - 1] = 2;
+      b[n - 1] = 7;
+      d[n - 1] = 8 * P(n - 1) + P(n);
+      x = solveTridiagonal(a, b, c, d);
+    }
+    for (let i = 0; i < n; i++) {
+      (h1[i] ??= [0, 0, 0])[k] = x[i];
+      const next = closed && n > 2 ? x[(i + 1) % n] : i < n - 1 ? x[i + 1] : NaN;
+      (h2[i] ??= [0, 0, 0])[k] = Number.isNaN(next) ? (P(n) + x[n - 1]) / 2 : 2 * P(i + 1) - next;
+    }
+  }
+  const out: Points = new Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    out[i * 4] = anchors[i];
+    out[i * 4 + 1] = h1[i];
+    out[i * 4 + 2] = h2[i];
+    out[i * 4 + 3] = anchors[i + 1];
+  }
+  return out;
+}
+
+function solveTridiagonal(a: number[], b: number[], c: number[], d: number[]): number[] {
+  const n = d.length;
+  const cp = new Array(n);
+  const dp = new Array(n);
+  cp[0] = c[0] / b[0];
+  dp[0] = d[0] / b[0];
+  for (let i = 1; i < n; i++) {
+    const m = b[i] - a[i] * cp[i - 1];
+    cp[i] = c[i] / m;
+    dp[i] = (d[i] - a[i] * dp[i - 1]) / m;
+  }
+  const x = new Array(n);
+  x[n - 1] = dp[n - 1];
+  for (let i = n - 2; i >= 0; i--) x[i] = dp[i] - cp[i] * x[i + 1];
+  return x;
+}
+
+/** Solve the cyclic system with rows (1, 4, 1) via Sherman-Morrison. */
+function solveCyclic(n: number, rhs: number[]): number[] {
+  const gamma = -4;
+  const a = new Array(n).fill(1);
+  const b = new Array(n).fill(4);
+  const c = new Array(n).fill(1);
+  b[0] = 4 - gamma;
+  b[n - 1] = 4 - 1 / gamma;
+  const u = new Array(n).fill(0);
+  u[0] = gamma;
+  u[n - 1] = 1;
+  const y = solveTridiagonal(a, b, c, rhs);
+  const q = solveTridiagonal(a, b, c, u);
+  const f = (y[0] + y[n - 1] / gamma) / (1 + q[0] + q[n - 1] / gamma);
+  return y.map((v, i) => v - f * q[i]);
+}
+
+/** Re-flow every subpath's handles: smooth spline or straight segments. */
+export function changeAnchorMode(points: Points, mode: 'smooth' | 'jagged'): Points {
+  const out: Points = [];
+  for (const sub of splitSubpaths(points)) {
+    const anchors: Vec[] = [];
+    for (let i = 0; i < sub.length; i += 4) anchors.push(sub[i]);
+    anchors.push(sub[sub.length - 1]);
+    const next = mode === 'smooth' ? smoothPoints(anchors) : cornersToPoints(anchors);
+    for (const p of next) out.push(p);
+  }
+  return out;
+}
+
+const lengthCache = new WeakMap<Points, {lengths: number[]; total: number}>();
+
+/** Approximate arc length of every curve (cached per points array). */
+export function curveLengths(points: Points): {lengths: number[]; total: number} {
+  let hit = lengthCache.get(points);
+  if (hit) return hit;
+  const n = points.length / 4;
+  const lengths: number[] = new Array(n);
+  let total = 0;
+  const SAMPLES = 8;
+  for (let i = 0; i < n; i++) {
+    const p0 = points[i * 4];
+    const p1 = points[i * 4 + 1];
+    const p2 = points[i * 4 + 2];
+    const p3 = points[i * 4 + 3];
+    let px = p0[0];
+    let py = p0[1];
+    let l = 0;
+    for (let k = 1; k <= SAMPLES; k++) {
+      const t = k / SAMPLES;
+      const u = 1 - t;
+      const a = u * u * u;
+      const b = 3 * u * u * t;
+      const c = 3 * u * t * t;
+      const d = t * t * t;
+      const x = a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0];
+      const y = a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1];
+      l += Math.hypot(x - px, y - py);
+      px = x;
+      py = y;
+    }
+    lengths[i] = l;
+    total += l;
+  }
+  hit = {lengths, total};
+  lengthCache.set(points, hit);
+  return hit;
+}
+
+/** Point at arc-length proportion `alpha` along the whole outline. */
+export function pointAtProportion(points: Points, alpha: number): Vec | null {
+  const n = points.length / 4;
+  if (n === 0) return null;
+  const {lengths, total} = curveLengths(points);
+  let target = Math.max(0, Math.min(1, alpha)) * total;
+  for (let i = 0; i < n; i++) {
+    if (target <= lengths[i] || i === n - 1) {
+      return bezierPoint(points, i * 4, lengths[i] === 0 ? 0 : Math.min(1, target / lengths[i]));
+    }
+    target -= lengths[i];
+  }
+  return points[points.length - 1];
+}
+
 export function bezierPoint(c: Points, i: number, t: number): Vec {
   const p0 = c[i];
   const p1 = c[i + 1];
