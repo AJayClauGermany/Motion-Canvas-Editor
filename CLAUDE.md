@@ -10,6 +10,8 @@ A portable, Manim-like animation editor built with web tech:
 | Scene language | **Civet** (CoffeeScript-flavoured TS superset → TS/TSX) | `@danielx/civet@0.11.17`, Vite plugin `@danielx/civet/vite` |
 | Bundler | Vite (Canvas Commons' plugin is Vite-only) | `vite` |
 
+Manim (Community + 3b1b ManimGL) and the original Motion Canvas are **cross-reference material only**: prior art for API and feature design, not dependencies.
+
 All of these move fast. **Don't trust memory for APIs. Check the docs below first.**
 
 ## Where the docs are
@@ -27,11 +29,17 @@ Shallow clones live in `.refs/` (gitignored). Re-run `tools/refs.sh` to update t
 | Canvas Commons docs | `.refs/canvas-commons/packages/docs/docs/` (see `migration/from-motion-canvas.mdx`) |
 | Canvas Commons source | `.refs/canvas-commons/packages/{core,2d,editor,player,vite-plugin}/src` |
 | Civet docs | `.refs/civet/civet.dev/*.md` (`reference.md` is the full syntax reference), `.refs/civet/CLAUDE.md` |
+| *Cross-ref:* Motion Canvas (original) | `.refs/motion-canvas/packages/docs/docs/`, `.refs/motion-canvas/packages/*/src`. Diff against Canvas Commons to see what the fork changed |
+| *Cross-ref:* Manim Community | `.refs/manim/docs/source/` (guides/tutorials, rst), `.refs/manim/manim/` (API reference = docstrings: `mobject/`, `animation/`, `scene/`, `camera/`) |
+| *Cross-ref:* ManimGL (3b1b) | `.refs/manimgl/docs/source/`, `.refs/manimgl/manimlib/` |
 
 ### Online (allowed in the cloud environment)
 - Electrobun: https://docs.electrobun.dev/electrobun/ (also https://electrobun.dev, https://framework.blackboard.sh)
 - Canvas Commons: https://canvascommons.io/docs/ (mirror https://canvas-commons.github.io)
 - Civet: https://civet.dev (`/reference`, `/integrations`)
+- Motion Canvas (original): https://motioncanvas.io/docs/
+- Manim Community: https://docs.manim.community/en/stable/ (reference: `/en/stable/reference.html`)
+- ManimGL (3b1b): https://3b1b.github.io/manim/
 - Bun: https://bun.com/docs, https://bun.com/llms.txt
 - Vite: https://vite.dev, https://vite.dev/llms.txt
 - Raw GitHub files: `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` works. `github.com` HTML pages are blocked, but `git clone` and release downloads work.

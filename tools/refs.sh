@@ -11,6 +11,10 @@ declare -A REPOS=(
   [hutch]=https://github.com/blackboardsh/hutch.git                # Electrobun 2 build CLI (Zig)
   [canvas-commons]=https://github.com/canvas-commons/canvas-commons.git  # packages/docs/docs, packages/*/src
   [civet]=https://github.com/DanielXMoore/Civet.git                # civet.dev/*.md, source/
+  # Cross-reference only (prior art; not dependencies):
+  [motion-canvas]=https://github.com/motion-canvas/motion-canvas.git     # upstream of Canvas Commons; packages/docs/docs
+  [manim]=https://github.com/ManimCommunity/manim.git              # Manim Community: docs/source (rst), manim/ (API docstrings)
+  [manimgl]=https://github.com/3b1b/manim.git                      # 3Blue1Brown's ManimGL: docs/source, manimlib/
 )
 names=("$@"); [ ${#names[@]} -eq 0 ] && names=("${!REPOS[@]}")
 for n in "${names[@]}"; do
