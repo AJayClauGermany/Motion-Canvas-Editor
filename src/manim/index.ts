@@ -10,6 +10,7 @@ import * as animation from './animation';
 import * as constants from './constants';
 import * as geometry from './geometry';
 import * as graphing from './graphing';
+import * as interop from './interop';
 import * as mobject from './mobject';
 import * as rate from './rate_functions';
 import * as scene from './scene';
@@ -36,6 +37,7 @@ export * from './animation';
 export * from './constants';
 export * from './geometry';
 export * from './graphing';
+export * from './interop';
 export * from './mobject';
 export * from './rate_functions';
 export * from './scene';
@@ -150,6 +152,13 @@ const helpers = {
   exp: Math.exp,
   log: Math.log,
   abs: Math.abs,
+  // Mixing with Canvas Commons nodes (see interop.ts).
+  wrap: interop.wrap,
+  unwrap: interop.unwrap,
+  px: interop.px,
+  units: interop.units,
+  to_pixels: interop.to_pixels,
+  to_units: interop.to_units,
 };
 
 function isClass(v: any): boolean {
@@ -184,6 +193,9 @@ function build(): Record<string, any> {
     }
   }
   out.__op = vec.__op;
+  // For `instanceof`; these are made by `wrap` and by adding a mobject to a node.
+  out.NodeMobject = interop.NodeMobject;
+  out.MobjectHost = interop.MobjectHost;
   return out;
 }
 

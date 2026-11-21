@@ -25,9 +25,26 @@ import {
 } from '@canvas-commons/core';
 import type {FullSceneDescription, Project, SceneDescription} from '@canvas-commons/core';
 import * as manim from '../manim';
-import {api, apiNames, config, makeManimScene, MobNode, Mobject, Scene, SceneReport, VMobject} from '../manim';
+import {
+  api,
+  apiNames,
+  config,
+  frameBounds,
+  hostedMobjects,
+  hostOf,
+  makeManimScene,
+  MobjectHost,
+  MobNode,
+  Mobject,
+  resetMobjectIds,
+  Scene,
+  SceneReport,
+  toMobject,
+  VMobject,
+} from '../manim';
 import {sceneFrameMarker as currentFrameMarker, setSceneSourceMarker} from '../manim/util';
 import type {CompileResult, Diagnostic} from './compile';
+import {__decorate} from './decorators';
 
 export interface SceneEntry {
   name: string;
@@ -231,6 +248,7 @@ const nodeClassNames = new Map<unknown, string>(
     .filter(([name, value]) => typeof value === 'function' && /^[A-Z]/.test(name))
     .map(([name, value]) => [value, name]),
 );
+nodeClassNames.set(MobjectHost, 'MobjectHost');
 
 /** Class name of a native node; a user's own subclass keeps its own name. */
 function nodeName(node: any): string {
@@ -487,6 +505,8 @@ export class Engine {
       // The engine's scene object is reused across reloads; forget a Manim
       // scene that ran in it before.
       (useScene() as any).manim = undefined;
+      // Mobjects of a native scene (`useManim`) keep their ids across re-runs.
+      resetMobjectIds();
     },
     __step: (line: number, kind: 'play' | 'wait', name: string, thread: any) => this.recordStep(line, kind, name, thread),
     __stepsDone: () => {
@@ -495,19 +515,26 @@ export class Engine {
       this.emit('timeline', {
         sceneName: this.activeScene ?? 'scene',
         segments: this.nativeSteps,
-        sections: [],
+        sections: ((useScene() as any).manim?.sections ?? []).map((s: SceneReport['sections'][number]) => ({...s, line: this.mapLine(s.line)})),
         duration: useThread().time(),
       });
     },
+    // Legacy decorators (`@signal()` on a custom component), see `lowerDecorators`.
+    __decorate,
   };
 
   private *recordStep(line: number, kind: 'play' | 'wait', name: string, thread: any): Generator<any, any, any> {
     const start = useThread().time();
     const segment: TimelineSegment & {mapped: boolean} = {kind, label: name, start, end: start, line, mobjects: [], mapped: true};
     const manim: Scene | undefined = (useScene() as any).manim;
-    if (manim) manim.segments.push(segment);
+    // A `Scene` class reports its own timeline; a `useManim` layer inside a
+    // native scene does not, and annotates the native step it plays in.
+    if (manim?.selfReporting) manim.segments.push(segment);
     else this.nativeSteps?.push(segment);
+    const outer = manim?.openStep ?? null;
+    if (manim && !manim.selfReporting) manim.openStep = segment;
     const result = yield* thread;
+    if (manim && !manim.selfReporting) manim.openStep = outer;
     segment.end = useThread().time();
     return result;
   }
@@ -583,35 +610,48 @@ export class Engine {
   public outline(): OutlineNode[] {
     const out: OutlineNode[] = [];
     const manim = this.manimScene;
+    // Native nodes that mobjects wrap are listed as those mobjects only.
+    const wrapped = new Set<unknown>();
+    const walk = (m: Mobject): OutlineNode => ({
+      id: m.id,
+      name: m.name,
+      kind: m._kind(),
+      line: this.mapLine(m.sourceLine),
+      color: m.hasPoints() || m.submobjects.length ? m.getColor() : undefined,
+      visible: m.hasPoints() ? m.fillOpacity > 0.001 || (m.strokeOpacity > 0.001 && m.strokeWidth > 0) : true,
+      children: m.submobjects.map(walk),
+    });
     if (manim) {
-      const walk = (m: Mobject): OutlineNode => ({
-        id: m.id,
-        name: m.name,
-        kind: m._kind(),
-        line: this.mapLine(m.sourceLine),
-        color: m.hasPoints() || m.submobjects.length ? m.getColor() : undefined,
-        visible: m.hasPoints() ? m.fillOpacity > 0.001 || (m.strokeOpacity > 0.001 && m.strokeWidth > 0) : true,
-        children: m.submobjects.map(walk),
-      });
-      out.push(...manim.mobjects.filter(m => m.name !== 'CameraFrame').map(walk));
+      // A mobject that a native node hosts is listed under that node.
+      const free = this.inScene(() => manim.mobjects.filter(m => !hostOf(m)), manim.mobjects);
+      const tops = free.filter(m => m.name !== 'CameraFrame');
+      for (const top of tops) for (const m of top.getFamily()) if (m._kind() === 'node') wrapped.add(m.node);
+      out.push(...tops.map(walk));
     }
     const walkNode = (n: any): OutlineNode => ({
       id: String(n.key),
       name: nodeName(n),
       kind: 'node',
-      line: this.lineFromStack(n.creationStack),
+      line: n instanceof MobjectHost ? this.mapLine(n.mobject.sourceLine) : this.lineFromStack(n.creationStack),
       color: styleColor(n.fill) ?? styleColor(n.stroke),
       visible: attempt(() => n.opacity() > 0.001, true),
-      children: attempt(() => n.children().map(walkNode), []),
+      children:
+        n instanceof MobjectHost
+          ? [walk(n.mobject)]
+          : attempt(() => n.children().filter((c: any) => !wrapped.has(c)).map(walkNode), []),
     });
-    out.push(...this.inScene(scene => this.nativeRoots(scene).map(walkNode), []));
+    out.push(...this.inScene(scene => this.nativeRoots(scene).filter(n => !wrapped.has(n)).map(walkNode), []));
     return out;
   }
 
   private findMobject(id: ItemId): Mobject | null {
-    const scene = this.manimScene;
-    if (!scene || typeof id !== 'number') return null;
-    for (const top of scene.mobjects) {
+    if (typeof id !== 'number') return null;
+    // Mobjects of the Manim scene, and those that native nodes host.
+    const tops = [
+      ...(this.manimScene?.mobjects ?? []),
+      ...this.inScene(scene => hostedMobjects(scene.getView()), []),
+    ];
+    for (const top of tops) {
       for (const m of top.getFamily()) if (m.id === id) return m;
     }
     return null;
@@ -621,14 +661,18 @@ export class Engine {
     if (typeof id === 'string') return this.inspectNode(id);
     const m = this.findMobject(id);
     if (!m) return null;
-    const c = m.getCenter();
+    // A wrapped native node reads its bounding box from signals.
+    const [c, width, height] = this.inScene(
+      () => [m.getCenter(), m.getWidth(), m.getHeight()] as const,
+      [[0, 0, 0], 0, 0] as const,
+    );
     const leaf = m.hasPoints() ? m : (m.familyMembersWithPoints()[0] ?? m);
     const text = (m as any).text ?? (m as any).texString ?? (m as any).char;
     const rows: InspectRow[] = [];
     if (text) rows.push({label: 'Text', value: String(text)});
     rows.push(
       {label: 'Center', value: `[${num(c[0])}, ${num(c[1])}]`},
-      {label: 'Size', value: `${num(m.getWidth())} × ${num(m.getHeight())}`},
+      {label: 'Size', value: `${num(width)} × ${num(height)}`},
       {label: 'Fill', value: `${leaf.fillColor} · ${num(leaf.fillOpacity)}`, swatch: {color: leaf.fillColor, opacity: leaf.fillOpacity}},
       {
         label: 'Stroke',
@@ -680,7 +724,9 @@ export class Engine {
   public bounds(id: ItemId): [number, number, number, number] | null {
     if (typeof id === 'number') {
       const m = this.findMobject(id);
-      return m ? m.getBounds() : null;
+      // In the scene context: a wrapped node measures itself, and a hosted
+      // mobject is placed by its host.
+      return m ? this.inScene(() => frameBounds(m), null) : null;
     }
     return this.inScene(scene => {
       const n: any = scene.getNode(id);
@@ -703,13 +749,24 @@ export class Engine {
       if (key === null || key === undefined) return null;
       const hit: any = scene2D.getNode(key);
       if (!hit || hit instanceof MobNode || hit === scene?.root || hit === scene2D.getView()) return null;
+      if (hit instanceof MobjectHost) return hit.mobject.id;
+      // A node that a mobject wraps is selected as that mobject, like its siblings.
+      for (let n = hit; n; n = n.parent()) {
+        const parent = n.parent();
+        if (parent instanceof MobjectHost) return (toMobject(n) as Mobject).id;
+        if (!scene || parent !== scene.root) continue;
+        const m: Mobject = toMobject(n);
+        const top = scene.mobjects.find(t => t === m || t.getFamily().includes(m));
+        return top ? top.id : String(key);
+      }
       return String(key);
     }, null);
     if (node !== null) return node;
     if (!scene) return null;
     const tops = [...scene.mobjects].reverse();
     for (const top of tops) {
-      if (top.name === 'CameraFrame') continue;
+      // A hosted mobject is found through its host above, where it is drawn.
+      if (top.name === 'CameraFrame' || attempt(() => !!hostOf(top), false)) continue;
       for (const m of top.getFamily().reverse()) {
         if (!m.hasPoints()) continue;
         let hit = false;

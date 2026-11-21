@@ -12,6 +12,7 @@ import {compile as civetCompile} from '@danielx/civet';
 import {parse} from 'acorn';
 import MagicString from 'magic-string';
 import {transform} from 'sucrase';
+import {lowerDecorators} from './decorators';
 
 export interface CompileOptions {
   /** Insert `yield*` before `@play` / `@wait`, so scenes read like Manim. */
@@ -367,7 +368,7 @@ export function compileScene(source: string, options: CompileOptions = defaultCo
   result.classNames = topLevelClasses(ts);
 
   try {
-    let js = transform(ts, {
+    let js = transform(lowerDecorators(ts), {
       transforms: ['typescript', 'jsx', 'imports'],
       jsxRuntime: 'automatic',
       jsxImportSource: '@canvas-commons/2d',
@@ -385,12 +386,9 @@ export function compileScene(source: string, options: CompileOptions = defaultCo
   } catch (e: any) {
     const jsLine = e?.loc?.line;
     const sourceLine = jsLine ? result.lineMap[jsLine - 1] : undefined;
-    const decorator = sourceLine !== undefined && /^\s*@\w/.test(ts.split('\n')[jsLine - 1] ?? '');
     result.diagnostics.push({
       stage: 'transform',
-      message: decorator
-        ? 'Decorators (such as @signal() on custom components) are not supported by the in-browser compiler yet.'
-        : String(e?.message ?? e),
+      message: String(e?.message ?? e),
       line: sourceLine,
     });
   }

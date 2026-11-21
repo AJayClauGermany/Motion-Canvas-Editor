@@ -175,8 +175,11 @@ example at `vite preview`).
   shape the way outlines do. `MathTex` and `Tex` are real outlines.
 - The Python converter translates syntax. It does not know numpy or Python's
   standard library beyond a small `np` shim.
-- TSX mode does not support decorators, so custom components that declare
-  signals with `@signal()` do not compile there yet.
+- Decorators are the legacy TypeScript kind (`experimentalDecorators`), which
+  is what Canvas Commons components use: `@signal()`, `@initial()`,
+  `@computed()` and the like work on class members and on classes, in TSX and
+  (written `@@signal()`) in Civet, while parameter decorators, decorators on
+  `#private` members and standard (TC39) decorator semantics are not supported.
 - Civet → TSX is exact (it is the Civet compiler's output plus an import
   list). TSX → Civet is best-effort: it keeps braces and parentheses, and it
   declines when the TSX uses something Civet cannot parse, such as a comment

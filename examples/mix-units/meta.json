@@ -1,0 +1,6 @@
+{
+  "title": "Units and pixels",
+  "description": "px, units, to_pixels and to_units convert between Manim units and Canvas Commons pixels, so a native node sits exactly on a mobject and a mobject on a native node.",
+  "style": "manim",
+  "order": 250
+}

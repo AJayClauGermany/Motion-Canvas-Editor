@@ -231,13 +231,44 @@ export function aliasFields(proto: object, fields: string[]) {
 }
 
 /**
+ * Extension points filled in by `interop.ts`, which bridges to Canvas Commons
+ * nodes. They live here so the modules below it (and the DOM-free tests) do
+ * not have to import Canvas Commons.
+ */
+export const hooks = {
+  /** Turn a Canvas Commons node into the mobject that wraps it; anything else is returned as is. */
+  toMobject: (x: any): any => x,
+};
+
+/**
+ * Whether a `play` argument is a native tween: a generator such as
+ * `rect.opacity(1, 0.5)` or `all(...)`, which runs as a Canvas Commons thread.
+ */
+export function isThread(x: any): x is Generator {
+  // `.animate` builders are proxies that answer to every property name.
+  if (!x || x.__builder) return false;
+  return typeof x.next === 'function' && typeof x[Symbol.iterator] === 'function';
+}
+
+/** Replace native nodes among constructor arguments by their mobjects. */
+function coerceArgs(args: any[]): any[] {
+  for (let i = 0; i < args.length; i++) args[i] = hooks.toMobject(args[i]);
+  return args;
+}
+
+/**
  * Wrap a class so it can be called without `new`, as in Python:
- * `Circle(radius: 2)` and `new Circle({radius: 2})` are equivalent.
+ * `Circle(radius: 2)` and `new Circle({radius: 2})` are equivalent. Native
+ * Canvas Commons nodes passed as arguments arrive as mobjects, so
+ * `FadeIn(<Rect />)` and `VGroup(circle, <Txt />)` work.
  */
 export function callable<T extends new (...args: any[]) => any>(klass: T): T & ((...args: ConstructorParameters<T>) => InstanceType<T>) {
   return new Proxy(klass, {
     apply(target, _this, args) {
-      return isJsxCall(args) ? fromJsx(target, args[0]) : new target(...args);
+      return isJsxCall(args) ? fromJsx(target, args[0]) : new target(...coerceArgs(args));
+    },
+    construct(target, args, newTarget) {
+      return Reflect.construct(target, coerceArgs(args), newTarget);
     },
   }) as any;
 }
@@ -257,14 +288,16 @@ const isMobjectLike = (v: any) => !!v && typeof v === 'object' && typeof v.getFa
  * `<Circle radius={2} color={BLUE} />` — attributes are the keyword
  * arguments. Children that are mobjects become submobjects; any other child
  * (text, a number) is a positional argument, so `<Text>Hi</Text>`
- * and `<MathTex>{"a"}{"+"}{"b"}</MathTex>` read naturally. `ref` receives the
+ * and `<MathTex>{"a"}{"+"}{"b"}</MathTex>` read naturally. Children that are
+ * Canvas Commons nodes are wrapped (see `interop.ts`). `ref` receives the
  * instance, which makes Canvas Commons' `createRef` work.
  */
 function fromJsx(target: new (...args: any[]) => any, jsxProps: Record<string, any>): any {
   const {ref, children, key: _key, ...props} = jsxProps;
-  const kids = (Array.isArray(children) ? children.flat(Infinity) : [children]).filter(
-    (c: any) => c !== undefined && c !== null && c !== false && c !== true,
-  );
+  const kids = (Array.isArray(children) ? children.flat(Infinity) : [children])
+    .filter((c: any) => c !== undefined && c !== null && c !== false && c !== true)
+    // A native node among the children becomes a submobject like the others.
+    .map(hooks.toMobject);
   const positional = kids
     .filter((c: any) => !isMobjectLike(c))
     .map((c: any) => (typeof c === 'string' ? c.trim() : c))

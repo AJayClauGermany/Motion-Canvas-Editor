@@ -32,7 +32,7 @@ import {
   UP,
   WHITE,
 } from './constants';
-import {aliasSnake, callerLine, kw, lerpColor, rgba, splitKw, toHex} from './util';
+import {aliasSnake, callerLine, hooks, kw, lerpColor, rgba, splitKw, toHex} from './util';
 import {add, eq, mul, sub, Vec} from './vec';
 
 export type Updater = (mob: any, dt: number) => void;
@@ -83,7 +83,8 @@ export class Mobject {
   public target?: Mobject;
   public savedState?: Mobject;
   public sourceLine?: number;
-  public node?: MobNode;
+  /** The Canvas Commons node that displays this leaf (see `_makeNode`). */
+  public node?: Node;
 
   public fillColor: string = WHITE;
   public fillOpacity = 0;
@@ -121,7 +122,9 @@ export class Mobject {
   // ---------------------------------------------------------------- family
 
   public add(...mobs: (Mobject | Mobject[])[]): this {
-    for (const m of mobs.flat()) {
+    for (const item of mobs.flat()) {
+      // A native Canvas Commons node joins the family as a `NodeMobject`.
+      const m: Mobject = hooks.toMobject(item);
       if (!m || m === this) continue;
       if (!this.submobjects.includes(m)) {
         this.submobjects.push(m);
@@ -132,7 +135,7 @@ export class Mobject {
   }
 
   public addToBack(...mobs: (Mobject | Mobject[])[]): this {
-    const list = mobs.flat();
+    const list: Mobject[] = mobs.flat().map(hooks.toMobject);
     this.remove(...list);
     this.submobjects.unshift(...list);
     for (const m of list) m.parents.push(this);
@@ -140,7 +143,8 @@ export class Mobject {
   }
 
   public remove(...mobs: (Mobject | Mobject[])[]): this {
-    for (const m of mobs.flat()) {
+    for (const item of mobs.flat()) {
+      const m: Mobject = hooks.toMobject(item);
       const i = this.submobjects.indexOf(m);
       if (i >= 0) {
         this.submobjects.splice(i, 1);
@@ -241,6 +245,14 @@ export class Mobject {
   /** Map every point of this leaf through `fn` (non-linear transforms). */
   public _applyFunction(_fn: (p: Vec) => Vec): void {}
   public _draw(_ctx: CanvasRenderingContext2D, _unit: number): void {}
+  /**
+   * The Canvas Commons node that puts this leaf on screen, created on first
+   * use. `null` keeps the leaf out of the scene's display list (a wrapped
+   * native node that lives inside some other native container).
+   */
+  public _makeNode(_scene: {root: Node; view: Node; displayDirty?: boolean}): Node | null {
+    return (this.node ??= new MobNode(this));
+  }
   /** Copy leaf data (geometry + style) from another mobject of the same kind. */
   public _copyData(from: Mobject): void {
     this.fillColor = from.fillColor;
@@ -479,6 +491,7 @@ export class Mobject {
 
   public moveTo(target: Mobject | Vec, ...rest: any[]): this {
     const o = kw(rest, ['alignedEdge'], {alignedEdge: ORIGIN});
+    target = hooks.toMobject(target);
     const point =
       target instanceof Mobject ? target.getCriticalPoint(o.alignedEdge) : target;
     return this.shift(sub(point, this.getCriticalPoint(o.alignedEdge)));
@@ -503,6 +516,7 @@ export class Mobject {
       buff: DEFAULT_MOBJECT_TO_MOBJECT_BUFFER,
       alignedEdge: ORIGIN,
     });
+    target = hooks.toMobject(target);
     const targetPoint =
       target instanceof Mobject
         ? target.getCriticalPoint(add(o.alignedEdge, o.direction))
@@ -513,6 +527,7 @@ export class Mobject {
 
   public alignTo(target: Mobject | Vec, ...rest: any[]): this {
     const direction: Vec = kw(rest, ['direction'], {direction: ORIGIN}).direction;
+    target = hooks.toMobject(target);
     const point =
       target instanceof Mobject ? target.getCriticalPoint(direction) : target;
     const mine = this.getCriticalPoint(direction);

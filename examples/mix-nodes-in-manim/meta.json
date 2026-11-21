@@ -1,0 +1,6 @@
+{
+  "title": "Native nodes as mobjects",
+  "description": "Canvas Commons nodes (a flexbox card, LaTeX) grouped, arranged and animated with Manim mobjects, plus a native tween inside play.",
+  "style": "manim",
+  "order": 240
+}

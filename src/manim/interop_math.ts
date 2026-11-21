@@ -21,7 +21,8 @@ export function units(length: number): number {
 
 /** A Manim point as a Canvas Commons `[x, y]` position (pixels, y down). */
 export function to_pixels(point: Vec): [number, number] {
-  return [point[0] * config.unit, -point[1] * config.unit];
+  // `0 - y` rather than `-y`, so the centre is [0, 0] and not [0, -0].
+  return [point[0] * config.unit, 0 - point[1] * config.unit];
 }
 
 /** A Canvas Commons position (`[x, y]` or a `Vector2`) as a Manim point. */
@@ -29,7 +30,7 @@ export function to_units(position: ArrayLike<number> | {x: number; y: number}): 
   const p = position as any;
   const x: number = typeof p.x === 'number' ? p.x : p[0];
   const y: number = typeof p.y === 'number' ? p.y : p[1];
-  return [x / config.unit, -y / config.unit, 0];
+  return [x / config.unit, 0 - y / config.unit, 0];
 }
 
 /** Manim angle (radians, counter-clockwise) → Canvas Commons rotation (degrees, clockwise on screen). */
@@ -40,20 +41,25 @@ export const toRadians = (degrees: number): number => (-degrees * Math.PI) / 180
 const EPSILON = 1e-9;
 export const differs = (a: number, b: number): boolean => Math.abs(a - b) > EPSILON;
 
+export type SyncAction = 'pull' | 'push' | 'none';
+
 /**
  * A wrapped node can be driven from both sides: Manim methods change the
- * mobject's state, Canvas Commons signals change the node. For one value,
- * given the mobject's `state`, what the `node` holds now and what was last
- * `pushed` to it:
+ * mobject's state, Canvas Commons signals change the node. This decides, for
+ * one value, which side is out of date.
  *
- * - the node no longer holds what was pushed → the native side moved it, so
- *   the mobject takes the node's value (`pull`);
- * - otherwise, if the state changed → the node takes it (`push`);
- * - otherwise there is nothing to do.
+ * - The node no longer holds what it held after the last sync: the native
+ *   side moved it, so the mobject takes the node's value (`pull`). The native
+ *   side wins when both changed.
+ * - Otherwise, if the mobject's state changed, the node takes it (`push`).
+ * - Otherwise nothing, unless the mobject's value is `derived` from more than
+ *   the node's own (a node inside a native container, whose place in the
+ *   frame also depends on its parents): then it is read again.
  */
-export function reconcile(state: number, node: number, pushed: number): 'pull' | 'push' | 'none' {
-  if (differs(node, pushed)) return 'pull';
-  return differs(state, pushed) ? 'push' : 'none';
+export function reconcile(nodeChanged: boolean, stateChanged: boolean, derived = false): SyncAction {
+  if (nodeChanged) return 'pull';
+  if (stateChanged) return 'push';
+  return derived ? 'pull' : 'none';
 }
 
 /** A 2D similarity (rotation, uniform scale, translation) read off a matrix. */

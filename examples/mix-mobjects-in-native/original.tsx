@@ -1,0 +1,38 @@
+import {makeScene2D, Rect, Txt} from '@canvas-commons/2d';
+import {all, createRef, waitFor} from '@canvas-commons/core';
+import {useManim, Circle, MathTex, Star, Create, Rotate, Write, BLUE, YELLOW, DOWN, PI} from 'manim';
+
+// Manim mobjects in a native Canvas Commons scene.
+export default makeScene2D(function* (view) {
+  view.fill('#141414');
+  // useManim gives the scene a Manim layer with play, wait, add and camera.
+  const m = useManim(view);
+  const card = createRef<Rect>();
+  const star = createRef<any>();
+
+  // A mobject can be the child of a native node. Its Manim coordinates are
+  // then relative to that node: [0, 0, 0] is the node's origin.
+  view.add(
+    <Rect ref={card} x={-450} width={420} height={320} radius={24} fill="#1f3a4d" opacity={0}>
+      <Txt y={-120} fill="#ffffff" fontSize={32} fontFamily="Inter, sans-serif" text="native Rect" />
+      <Star ref={star} outer_radius={0.7} color={YELLOW} fill_opacity={0.8} />
+    </Rect>,
+  );
+
+  // A native tween, then a Manim animation on the nested mobject.
+  yield* card().opacity(1, 0.5);
+  yield* m.play(Rotate(star(), PI), {run_time: 1});
+  // The star moves and turns with its parent.
+  yield* all(card().rotation(-15, 0.8), card().position.x(-550, 0.8));
+
+  // Mobjects outside the node tree are drawn by the Manim layer.
+  const circle = Circle({radius: 1.2, color: BLUE});
+  circle.shift([3, 0, 0]);
+  const formula = MathTex('A = \\pi r^2');
+  formula.next_to(circle, DOWN);
+  yield* m.play(Create(circle), Write(formula));
+
+  // Both in one step: play also takes native tweens.
+  yield* m.play(circle.animate.set_fill(BLUE, 0.5), card().rotation(0, 1));
+  yield* waitFor(0.5);
+});

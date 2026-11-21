@@ -1,0 +1,30 @@
+from manim import *
+import { Circle as Ring, Rect } from "@canvas-commons/2d"
+
+# Manim measures in units with y up, Canvas Commons in pixels with y down.
+# px, units, to_pixels and to_units convert between the two.
+class MixUnits extends Scene
+  construct()
+    @add NumberPlane(background_line_style: {stroke_opacity: 0.35})
+
+    # A native node on a mobject: to_pixels turns a Manim point into [x, y]
+    # pixels, units() turns a length into pixels.
+    dot := Dot [-4, 1, 0], color: YELLOW, radius: 0.12
+    ring := <Ring position={to_pixels dot.get_center()} size={units 1} stroke="#fc6255" lineWidth={6} />
+    @view.add ring
+    dot.add_updater => ring.position to_pixels dot.get_center()
+
+    # A mobject on a native node: to_units and px go the other way.
+    tile := <Rect x={270} y={135} width={180} height={180} radius={24} fill="#236b8e" />
+    @view.add tile
+    frame := Square side_length: px(180) + 0.4, color: WHITE
+    frame.move_to to_units tile.position()
+    frame.add_updater => frame.move_to to_units tile.position()
+
+    @play Create(dot), Create(frame)
+    # The ring follows the dot ...
+    @play dot.animate.shift(3 * RIGHT + 2 * DOWN)
+    # ... and the frame follows the tile, which a native tween moves. Passing
+    # the tween to play keeps the updaters running.
+    @play tile.position([-405, -270], 1)
+    @wait 0.5

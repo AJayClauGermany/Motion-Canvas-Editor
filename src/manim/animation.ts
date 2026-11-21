@@ -16,7 +16,7 @@ import {
   wiggle as wiggleRate,
 } from './rate_functions';
 import {Glyph} from './text';
-import {aliasFields, aliasSnake, isPlain, kw, splitKw, toHex} from './util';
+import {aliasFields, aliasSnake, hooks, isPlain, isThread, kw, splitKw, toHex} from './util';
 import {add, mul, rotate, sub, Vec} from './vec';
 
 export interface SceneLike {
@@ -55,10 +55,12 @@ export class Animation {
   public reverseRateFunction = false;
   public name: string;
   public startingMobject!: Mobject;
+  /** Native tweens (generators) that `Scene.play` runs alongside this animation. */
+  public threads: Generator[] = [];
   protected opts: Record<string, any>;
 
   public constructor(mobject: Mobject | null | undefined, opts: Record<string, any> = {}) {
-    this.mobject = mobject ?? new VGroup();
+    this.mobject = hooks.toMobject(mobject) ?? new VGroup();
     this.opts = opts;
     const ctor = this.constructor as any;
     this.name = opts.name ?? (Object.hasOwn(ctor, 'displayName') ? ctor.displayName : ctor.name);
@@ -151,6 +153,9 @@ function becomePartial(sub: Mobject, src: Mobject, a: number, b: number) {
     sub.pointwiseBecomePartial(src, a, b);
   } else if (sub instanceof Glyph) {
     sub.partial = a <= 0 && b >= 1 ? null : [a, b];
+  } else if (sub._kind() === 'node') {
+    // A native node has no outline to trace: it fades with the drawn portion.
+    sub.fillOpacity = src.fillOpacity * (b - a);
   }
 }
 
@@ -319,7 +324,7 @@ export class Transform extends Animation {
   public constructor(mobject: Mobject, target: Mobject, ...rest: any[]) {
     const o = kw(rest, [], {pathArc: 0});
     super(mobject, o);
-    this.targetMobject = target;
+    this.targetMobject = hooks.toMobject(target);
     this.pathArc = o.pathArc;
     if (o.replaceMobjectWithTargetInScene) this.replace = true;
   }
@@ -879,8 +884,11 @@ export class AnimationGroup extends Animation {
 
   public constructor(...args: any[]) {
     const [items, o] = splitKw(args);
-    const anims = items.flat().map(toAnimation);
+    const flat = items.flat();
+    const anims = flat.filter(x => !isThread(x)).map(toAnimation);
     super(new VGroup(), {lagRatio: 0, rateFunc: linear, ...o});
+    // Native tweens are not on the group's clock: they start with the play.
+    this.threads = flat.filter(isThread);
     this.animations = anims;
     this.buildTimings();
     this.runTime = this.maxEnd();
@@ -1159,6 +1167,7 @@ export function toAnimation(x: any): Animation {
   if (x instanceof Animation) return x;
   const builder: AnimateBuilder | undefined = x?.__builder;
   if (builder) return builder.build();
+  x = hooks.toMobject(x);
   if (x instanceof Mobject) {
     throw new Error(`play() got a ${x.name} instead of an animation. Did you mean ${x.name}.animate, or FadeIn(...)?`);
   }
