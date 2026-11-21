@@ -76,7 +76,7 @@ None of this sandbox tooling is needed on a normal dev machine: use `hutch` / `b
 | Path | What |
 |---|---|
 | `src/manim/` | The Manim-style layer on Canvas Commons (TypeScript): `mobject.ts` (Mobject/VMobject on Manim-style Bézier points, units, y up), `geometry.ts`, `text.ts`, `tex.ts`, `animation.ts`, `graphing.ts`, `scene.ts`, `interop.ts` (native nodes as mobjects and the reverse). `index.ts` builds `api`, the flat namespace a scene gets from `from manim import *` |
-| `src/runtime/` | `compile.ts` (Civet → JS in the browser), `engine.ts` (Canvas Commons `Player` + `Stage` wrapper, timeline, outline, picking), `dialect.ts` (variant conversions), `python.ts` (Manim Python → Civet) |
+| `src/runtime/` | `compile.ts` (Civet or TSX → JS in the browser, timeline step instrumentation), `decorators.ts` (legacy decorators lowered before sucrase), `engine.ts` (Canvas Commons `Player` + `Stage` wrapper, timeline, outline, picking), `dialect.ts` (Manim dialect variants), `convert.ts` (Civet ⇄ TSX), `python.ts` (Manim Python → Civet) |
 | `src/editor/` | The editor UI, Solid 2. `state.ts` is the single state object; `settings.ts` defines the Lab flags |
 | `shell/`, `electrobun.config.ts` | Electrobun desktop shell around the Vite build (`docs/desktop-shell.md`) |
 | `examples/<slug>/` | Bundled scenes: `scene.civet`, `meta.json` (`style`: `manim` or `canvas-commons`), and the source it was ported from: `manim.py` for Manim examples, `original.tsx` for native ones (`cc-*`) |

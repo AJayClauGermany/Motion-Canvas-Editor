@@ -201,6 +201,11 @@ example at `vite preview`).
   lossless as long as the converted text was not edited.
 - The `yield*` and `self` switches only mean something in Civet; in TSX both
   are always explicit.
+- Mixing has edges: a `Transform` between a native node and a shape travels
+  but does not morph, a node positioned by flexbox cannot be moved from the
+  Manim side, and a mobject hosted in a native tree is not a flex item. The
+  full list is in [docs/manim-compatibility.md](docs/manim-compatibility.md)
+  under "Mixing with Canvas Commons nodes".
 - Video export records in real time with `MediaRecorder`, which the Linux
   desktop webview (WebKitGTK) does not support. Frame-exact rendering through
   Canvas Commons' renderer is not wired up yet.
