@@ -3,6 +3,7 @@ import solid from '@solidjs/vite-plugin';
 import {resolve} from 'node:path';
 import {defineConfig} from 'vite';
 import {viteSingleFile} from 'vite-plugin-singlefile';
+import {examplesPlugin} from './tools/vite-examples.ts';
 
 // The editor compiles scenes in the browser (src/runtime/compile.ts), so the
 // Canvas Commons Vite plugin is not needed here. Civet stays first so `.civet`
@@ -11,6 +12,7 @@ import {viteSingleFile} from 'vite-plugin-singlefile';
 export default defineConfig(({mode}) => ({
   base: './',
   plugins: [
+    examplesPlugin(resolve(import.meta.dirname, 'examples')),
     civet({ts: 'preserve'}),
     solid({include: ['src/editor/**']}),
     ...(mode === 'single' ? [viteSingleFile()] : []),

@@ -13,12 +13,17 @@ let diagnostics: unknown[] = [];
 let duration = 0;
 engine.on('timeline', t => (timeline = t));
 engine.on('diagnostics', d => (diagnostics = d));
-engine.on('duration', d => (duration = d));
+let gotDuration = false;
+engine.on('duration', d => {
+  duration = d;
+  gotDuration = true;
+});
 
 const api = {
   engine,
   async run(source: string, options = {}, scene?: string) {
     timeline = null;
+    gotDuration = false;
     const compiled = compileScene(source, {...defaultCompileOptions, ...options});
     const ok = await engine.load(compiled, scene);
     if (ok) await api.settle();
@@ -28,7 +33,7 @@ const api = {
   async settle(timeout = 15000) {
     const start = performance.now();
     while (performance.now() - start < timeout) {
-      if ((timeline || diagnostics.length) && duration >= 0) break;
+      if (timeline || diagnostics.length || gotDuration) break;
       await new Promise(r => setTimeout(r, 30));
     }
     await new Promise(r => setTimeout(r, 80));

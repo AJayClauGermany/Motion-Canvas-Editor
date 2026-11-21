@@ -452,21 +452,29 @@ export class Engine {
     return new Promise(resolve => this.canvas.toBlob(resolve, 'image/png'));
   }
 
-  /** Record the whole animation in real time to a WebM blob. */
-  public async record(onProgress?: (p: number) => void): Promise<Blob | null> {
-    const player = this.player;
-    if (!player || typeof MediaRecorder === 'undefined') return null;
-    const stream = this.canvas.captureStream(this.fps);
-    const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t =>
+  /** Whether this webview can record video (WebKitGTK often cannot). */
+  public canRecord(): boolean {
+    return this.recorderMime() !== undefined;
+  }
+  private recorderMime(): string | undefined {
+    if (typeof MediaRecorder === 'undefined' || !this.canvas.captureStream) return undefined;
+    return ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find(t =>
       MediaRecorder.isTypeSupported(t),
     );
-    if (!mime) return null;
+  }
+
+  /** Record the whole animation in real time to a video blob. */
+  public async record(onProgress?: (p: number) => void): Promise<Blob | null> {
+    const player = this.player;
+    const mime = this.recorderMime();
+    if (!player || !mime) return null;
+    const stream = this.canvas.captureStream(this.fps);
     const recorder = new MediaRecorder(stream, {mimeType: mime, videoBitsPerSecond: 12_000_000});
     const chunks: Blob[] = [];
     recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
     const duration = player.playback.duration;
     const done = new Promise<Blob>(resolve => {
-      recorder.onstop = () => resolve(new Blob(chunks, {type: 'video/webm'}));
+      recorder.onstop = () => resolve(new Blob(chunks, {type: mime.split(';')[0]}));
     });
     player.togglePlayback(false);
     player.toggleLoop(false);

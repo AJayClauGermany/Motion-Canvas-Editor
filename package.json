@@ -12,12 +12,15 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "test:e2e": "bun tools/e2e.ts",
-    "shell:dev": "bun run build && electrobun build --env=dev && electrobun run --env=dev",
-    "shell:build": "bun run build && electrobun build --env=stable"
+    "shell:dev": "bun run build && electrobun dev",
+    "shell:run": "electrobun run --env=dev",
+    "shell:build": "bun run build && electrobun build --env=stable",
+    "shell:typecheck": "electrobun prepare && tsc --noEmit -p shell/tsconfig.json"
   },
   "dependencies": {
     "@canvas-commons/2d": "0.4.0",
     "@canvas-commons/core": "0.4.0",
+    "@codemirror/autocomplete": "^6.20.4",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/language": "^6.13.1",
     "@codemirror/legacy-modes": "^6.5.5",

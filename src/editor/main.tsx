@@ -1,2 +1,5 @@
 import {render} from '@solidjs/web';
-render(() => <div>booting…</div>, document.getElementById('app')!);
+import {App} from './App';
+import './styles.css';
+
+render(() => <App />, document.getElementById('app')!);

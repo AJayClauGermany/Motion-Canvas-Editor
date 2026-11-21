@@ -1,0 +1,28 @@
+// Canvas Commons (Motion Canvas) style: JSX nodes, refs and signals.
+// Nothing here is Manim-specific. This is the engine's native API.
+import { makeScene2D, Circle, Rect, Txt } from "@canvas-commons/2d"
+import { all, createRef, waitFor, easeInOutCubic } from "@canvas-commons/core"
+
+export default makeScene2D (view) ->
+  view.fill "#141414"
+  circle := createRef<Circle>()
+  box := createRef<Rect>()
+  label := createRef<Txt>()
+
+  view.add <>
+    <Rect ref={box} x={-300} width={240} height={240} radius={24} fill="#e13238" />
+    <Circle ref={circle} x={300} size={240} fill="#58c4dd" />
+    <Txt ref={label} y={260} fill="#ffffff" fontSize={56} opacity={0} text="signals drive everything" />
+  </>
+
+  yield* all(
+    box().position.x(300, 1, easeInOutCubic),
+    circle().position.x(-300, 1, easeInOutCubic),
+  )
+  yield* label().opacity 1, 0.5
+  yield* all(
+    box().rotation(90, 1),
+    box().fill("#e6a700", 1),
+    circle().scale(1.4, 0.5).to(1, 0.5),
+  )
+  yield* waitFor 0.5

@@ -220,11 +220,17 @@ export function compileScene(source: string, options: CompileOptions = defaultCo
       return last;
     });
   } catch (e: any) {
+    const raw = String(e?.message ?? e);
+    // Civet 0.11 throws an internal error (not a ParseError) for a multi-line
+    // call that mixes positional arguments with bare `key: value` lines.
+    const internal = /hoistDec/.test(raw);
     result.diagnostics.push({
       stage: 'civet',
-      message: String(e?.message ?? e).split('\nExpected:')[0].replace(/^unknown:\d+:\d+\s*/, ''),
-      line: typeof e?.line === 'number' ? e.line : undefined,
-      column: typeof e?.column === 'number' ? e.column : undefined,
+      message: internal
+        ? 'Civet could not compile a multi-line call that mixes positional arguments with `key: value` lines ending in commas. Wrap the keyword arguments in { }, or drop the trailing commas.'
+        : raw.split('\nExpected:')[0].replace(/^unknown:\d+:\d+\s*/, ''),
+      line: !internal && typeof e?.line === 'number' ? e.line : undefined,
+      column: !internal && typeof e?.column === 'number' ? e.column : undefined,
     });
     return result;
   }
