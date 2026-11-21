@@ -57,6 +57,14 @@ or webview output to the terminal.
 - The shell sets no Content-Security-Policy and Electrobun adds none, so
   `new Function` and `eval` work. `views://` is a secure context
   (`crypto.subtle` and `navigator.clipboard` exist).
+- JavaScriptCore drops source locations from stack frames of `new Function`
+  code, which the editor needs to map timeline steps and errors to source
+  lines. `src/runtime/engine.ts` detects this and loads scene code as a blob
+  `<script>` instead; frames then carry the blob URL and line. Verified in the
+  shell: steps report their lines and the running line is highlighted.
+- Native `<select>` elements are restyled in `src/editor/styles.css`
+  (`appearance: none`), because WebKitGTK otherwise draws them with a light GTK
+  look in the dark UI.
 - Asset URLs stay relative (`base: './'` in `vite.config.ts`), so
   `views://editor/index.html` resolves `./assets/...` inside the bundle.
 - WebKit's storage (which holds `localStorage`) is per channel, on Linux under
@@ -69,6 +77,10 @@ Linux x64, WebKitGTK 2.52.6 (`libwebkit2gtk-4.1`), Xvfb, Electrobun 2.0.7.
 - `bun run shell:dev` builds and opens the window. The editor UI renders
   (code pane, preview, timeline, "Ready") with no page errors reported.
   Screenshot: `artifacts/shell/index.png`.
+- A probe that waits for the timeline, clicks the second step and reports back:
+  3 steps with source lines 11 to 13, the playhead at 1.03 s, the running line
+  highlighted, the outline listing the square. Screenshot:
+  `artifacts/shell/editor.png`.
 - `MCE_SHELL_URL=views://editor/harness.html` with a probe that calls
   `window.harness.run()` on `examples/square-to-circle/scene.civet`: compiles
   and renders (`ok: true`, no diagnostics, 91 frames, 1920x1080 canvas).
@@ -111,10 +123,9 @@ module, which rejects the `http://127.0.0.1` relay URL that `hutch-env.sh` sets
   exists, but `isTypeSupported` is false for `video/webm` and `video/mp4`.
   WebKitGTK records through GStreamer; the sandbox has only the base and good
   plugin sets. Probably a missing-plugin issue rather than a shell issue, but
-  not confirmed. Check with `MCE_SHELL_PROBE=1` on a real desktop before
-  relying on WebM export under WebKitGTK.
-- **Native `<select>` elements render with a light GTK look** (white background
-  in the dark UI) under WebKitGTK; see `artifacts/shell/index.png`.
+  not confirmed. The editor checks `MediaRecorder.isTypeSupported` and disables
+  its Video button where nothing is supported. Check with `MCE_SHELL_PROBE=1` on
+  a real desktop before relying on video export under WebKitGTK.
 - **`electrobun run --env=stable` installs the app.** The stable bundle is a
   self-extracting installer: running it copies the app to
   `~/.local/share/dev.motioncanvaseditor.app/stable/` and adds a desktop entry.
