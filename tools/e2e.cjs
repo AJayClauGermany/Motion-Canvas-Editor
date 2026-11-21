@@ -7,7 +7,9 @@
  *   node tools/e2e.cjs square moving   # only slugs containing these words
  *   node tools/e2e.cjs path/to/file.civet
  *
- * A native example's `original.tsx` is rendered too, in TSX mode.
+ * A native example's `original.tsx` is rendered too, in TSX mode. Every scene is
+ * also converted to the other language (Civet → TSX, TSX → Civet) and must run
+ * with the same steps and duration.
  *
  * Starts a Vite dev server unless one is already listening on E2E_URL.
  */
@@ -74,6 +76,27 @@ async function up() {
     const after = await page.evaluate(() => window.harness.info());
     for (const d of after.diagnostics || []) {
       if (!seen.has(JSON.stringify(d))) unique.push(d), seen.add(JSON.stringify(d));
+    }
+    // Parity: the same scene converted to the other language must run the same.
+    // A Civet scene is converted to TSX; a shipped TSX original back to Civet.
+    if (result.ok && unique.length === 0 && !file.endsWith('original.tsx') === !options) {
+      const toTsx = !options;
+      const converted = await page.evaluate(([s, t]) => (t ? window.harness.toTsx(s) : window.harness.toCivet(s)), [source, toTsx]);
+      if (!converted.ok) {
+        // TSX → Civet is best-effort and may decline; Civet → TSX may not.
+        if (toTsx) unique.push({stage: 'convert', message: `Civet → TSX failed: ${converted.notes.join(' ')}`});
+      } else {
+        const again = await page.evaluate(([s, o]) => window.harness.run(s, o), [converted.code, toTsx ? {language: 'tsx'} : {implicitYield: false}]);
+        const info2 = await page.evaluate(() => window.harness.info());
+        const first = [...(again.diagnostics || []), ...(info2.diagnostics || [])][0];
+        const label = toTsx ? 'as TSX' : 'as Civet';
+        if (!again.ok || first) unique.push({stage: 'convert', message: `${label}: ${first ? first.message : 'did not run'}`, line: first && first.line});
+        else if (info.timeline && info2.timeline) {
+          const a = `${info.timeline.segments.length} steps, ${info.timeline.duration.toFixed(2)}s`;
+          const b = `${info2.timeline.segments.length} steps, ${info2.timeline.duration.toFixed(2)}s`;
+          if (a !== b) unique.push({stage: 'convert', message: `${label} it runs differently: ${b} instead of ${a}`});
+        }
+      }
     }
     const ok = result.ok && unique.length === 0;
     if (!ok) failed++;

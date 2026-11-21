@@ -2,7 +2,9 @@
  * Headless test harness: no editor UI, just the compiler and the engine.
  * `tools/e2e.ts` drives it with Playwright to render example scenes.
  */
+import {apiNames} from './manim';
 import {compileScene, defaultCompileOptions} from './runtime/compile';
+import {civetToTsx, tsxToCivet} from './runtime/convert';
 import {Engine, Timeline} from './runtime/engine';
 
 const engine = new Engine();
@@ -50,6 +52,9 @@ const api = {
   },
   info: () => ({timeline, diagnostics, duration, fps: engine.fps, outline: engine.outline()}),
 };
+/** Language conversions, so the e2e run can check that a converted scene behaves the same. */
+(api as any).toTsx = (source: string) => civetToTsx(source, apiNames);
+(api as any).toCivet = (source: string) => tsxToCivet(source);
 (window as any).harness = api;
 
 /** Render `count` evenly spaced frames into one contact sheet (PNG data URL). */

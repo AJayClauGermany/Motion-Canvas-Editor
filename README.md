@@ -89,7 +89,7 @@ notes on the clipboard as Markdown.
 | Method names | `snake_case` · `camelCase` (both always work) | `snake_case` |
 | Scene reference | `@play` · `self.play` | `@play` |
 | Vector math | `2 * UP + LEFT` via operator overloading · plain JS | overloading |
-| Canvas Commons scenes | Civet · TSX (compiled without Civet, so Motion Canvas scenes paste in unchanged) | Civet |
+| Source language | Civet · TSX (compiled without Civet). Applies to both styles, and switching converts the open scene | Civet |
 | Layout | Studio · Split · Stage | Studio |
 | When to re-run | as you type · on Ctrl/Cmd+Enter | as you type |
 | Reference pane | hidden · Manim (Python) · compiled TS | hidden |
@@ -138,7 +138,7 @@ adding a variant is one entry there plus the code that reads it.
 |---|---|---|
 | Starts with | `from manim import *` and a `Scene` class | imports from `@canvas-commons/*` and `export default makeScene2D ...` |
 | Units | Manim units, y up, frame 8 tall | pixels, y down, 1920 × 1080 |
-| Language | Civet | Civet, or TSX (Lab choice, or open a `.tsx` file) |
+| Language | Civet or TSX | Civet or TSX |
 | Timeline step | each `@play` / `@wait` | each `yield*` statement of the scene function |
 | Outline and inspector | mobjects | nodes |
 | Examples | `examples/*` with `manim.py` | `examples/cc-*` with `original.tsx` |
@@ -147,9 +147,11 @@ Nothing is translated between the two: a Manim `Scene` is itself a
 `makeScene2D` scene, and each mobject is drawn by a Canvas Commons node. That
 is why they mix. A Manim scene can add native nodes with `@view.add <Rect … />`
 and animate them with `yield*`, and mobjects can be written as JSX
-(`<Circle radius={2} color={BLUE} />`); see `examples/jsx-mobjects`. In TSX
-mode the compiler adds no sugar at all: no implicit `yield*`, no operator
-overloading, no `#` comments.
+(`<Circle radius={2} color={BLUE} />`); see `examples/jsx-mobjects`. Either style can be written in either language. In TSX the compiler adds no
+syntax sugar: `yield*` is always written out, Manim names are imported from
+`'manim'`, and comments are `//`. Vector arithmetic (`2 * UP + LEFT`) still
+works in a TSX scene that imports the Manim layer. Opening a `.tsx` or `.civet`
+file selects its language.
 
 ## Tests
 
@@ -175,9 +177,13 @@ example at `vite preview`).
   standard library beyond a small `np` shim.
 - TSX mode does not support decorators, so custom components that declare
   signals with `@signal()` do not compile there yet.
-- The Lab's language switches (naming, `yield*`, `self`) convert Manim-style
-  buffers only. Civet ⇄ TSX is a choice between two sources an example ships
-  with, not a converter.
+- Civet → TSX is exact (it is the Civet compiler's output plus an import
+  list). TSX → Civet is best-effort: it keeps braces and parentheses, and it
+  declines when the TSX uses something Civet cannot parse, such as a comment
+  inside a JSX tag. Switching back to the language a scene came from is
+  lossless as long as the converted text was not edited.
+- The `yield*` and `self` switches only mean something in Civet; in TSX both
+  are always explicit.
 - Video export records in real time with `MediaRecorder`, which the Linux
   desktop webview (WebKitGTK) does not support. Frame-exact rendering through
   Canvas Commons' renderer is not wired up yet.

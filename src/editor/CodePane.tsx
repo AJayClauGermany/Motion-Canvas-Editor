@@ -142,6 +142,11 @@ export function CodePane() {
           </For>
         </div>
       </header>
+      <Show when={ed.notice().length > 0}>
+        <ul class="notice">
+          <For each={ed.notice()}>{note => <li>{note}</li>}</For>
+        </ul>
+      </Show>
       <div class="code-split">
         <SourceEditor />
         <Show when={reference()}>

@@ -1,44 +1,77 @@
 import {For, Show} from 'solid-js';
 import {useEditor} from './state';
 
-const rows: [string, string, string][] = [
-  ['Import', 'from manim import *', 'from manim import *'],
-  ['Scene', 'class Demo(Scene):\n    def construct(self):', 'class Demo extends Scene\n  construct()'],
-  ['Assign', 'circle = Circle(radius=2)', 'circle := Circle radius: 2'],
-  ['Keyword args', 'c.set_fill(PINK, opacity=0.5)', 'c.set_fill PINK, opacity: 0.5'],
-  ['Play', 'self.play(Create(c), run_time=2)', '@play Create(c), run_time: 2'],
-  ['Wait', 'self.wait(0.5)', '@wait 0.5'],
-  ['Animate', 'self.play(c.animate.shift(UP))', '@play c.animate.shift UP'],
-  ['Vectors', 'c.shift(2 * UP + LEFT)', 'c.shift 2 * UP + LEFT'],
-  ['Lambda', 'lambda m: m.move_to(d)', '(m) => m.move_to d'],
-  ['Loop', 'for i in range(3):', 'for i of [0...3]'],
-  ['List build', '[Dot() for _ in range(5)]', 'for _ of [0...5]\n  Dot()'],
-  ['Unpack', 'VGroup(*dots)', 'VGroup ...dots'],
-  ['Raw TeX', 'MathTex(r"\\frac{a}{b}")', 'MathTex r`\\frac{a}{b}`'],
-  ['Comment', '# note', '# note'],
-  ['JSX (optional)', 'Circle(radius=2, color=BLUE)', '<Circle radius={2} color={BLUE} />'],
+/** [topic, the familiar spelling, here in Civet, here in TSX] */
+type Row = [string, string, string, string];
+
+const manimRows: Row[] = [
+  ['Import', 'from manim import *', 'from manim import *', "import {Scene, Circle, Create} from 'manim';"],
+  [
+    'Scene',
+    'class Demo(Scene):\n    def construct(self):',
+    'class Demo extends Scene\n  construct()',
+    'class Demo extends Scene {\n  *construct() {',
+  ],
+  ['Assign', 'circle = Circle(radius=2)', 'circle := Circle radius: 2', 'const circle = Circle({radius: 2});'],
+  ['Keyword args', 'c.set_fill(PINK, opacity=0.5)', 'c.set_fill PINK, opacity: 0.5', 'c.set_fill(PINK, {opacity: 0.5});'],
+  ['Play', 'self.play(Create(c), run_time=2)', '@play Create(c), run_time: 2', 'yield* this.play(Create(c), {run_time: 2});'],
+  ['Wait', 'self.wait(0.5)', '@wait 0.5', 'yield* this.wait(0.5);'],
+  ['Animate', 'self.play(c.animate.shift(UP))', '@play c.animate.shift UP', 'yield* this.play(c.animate.shift(UP));'],
+  ['Vectors', 'c.shift(2 * UP + LEFT)', 'c.shift 2 * UP + LEFT', 'c.shift(2 * UP + LEFT);'],
+  ['Lambda', 'lambda m: m.move_to(d)', '(m) => m.move_to d', '(m) => m.move_to(d)'],
+  ['Loop', 'for i in range(3):', 'for i of [0...3]', 'for (let i = 0; i < 3; i++) {'],
+  ['List build', '[Dot() for _ in range(5)]', 'for _ of [0...5]\n  Dot()', 'range(5).map(() => Dot())'],
+  ['Unpack', 'VGroup(*dots)', 'VGroup ...dots', 'VGroup(...dots)'],
+  ['Raw TeX', 'MathTex(r"\\frac{a}{b}")', 'MathTex r`\\frac{a}{b}`', 'MathTex(r`\\frac{a}{b}`)'],
+  ['Comment', '# note', '# note', '// note'],
+  ['JSX (optional)', 'Circle(radius=2, color=BLUE)', '<Circle radius={2} color={BLUE} />', '<Circle radius={2} color={BLUE} />'],
 ];
 
-const nativeRows: [string, string, string][] = [
-  ['Imports', "import {makeScene2D, Rect} from '@canvas-commons/2d';", 'import { makeScene2D, Rect } from "@canvas-commons/2d"'],
-  ['Scene', 'export default makeScene2D(function* (view) {\n  ...\n});', 'export default makeScene2D (view) ->\n  ...'],
-  ['Constant', 'const box = createRef<Rect>();', 'box := createRef<Rect>()'],
-  ['Add nodes', 'view.add(<Rect ref={box} width={240} />);', 'view.add <Rect ref={box} width={240} />'],
-  ['Tween', 'yield* box().position.x(300, 1);', 'yield* box().position.x 300, 1'],
-  ['Together', 'yield* all(\n  box().rotation(90, 1),\n  box().fill("#e6a700", 1),\n);', 'yield* all(\n  box().rotation(90, 1),\n  box().fill("#e6a700", 1),\n)'],
-  ['Arrow function', 'width={() => scale() * 120}', 'width={=> scale() * 120}'],
-  ['Loop', 'for (const node of nodes) {\n  yield* node.opacity(1, 0.3);\n}', 'for node of nodes\n  yield* node.opacity 1, 0.3'],
-  ['Comment', '// note', '// note'],
+const nativeRows: Row[] = [
+  [
+    'Imports',
+    "import {makeScene2D, Rect} from '@canvas-commons/2d';",
+    'import { makeScene2D, Rect } from "@canvas-commons/2d"',
+    "import {makeScene2D, Rect} from '@canvas-commons/2d';",
+  ],
+  [
+    'Scene',
+    'export default makeScene2D(function* (view) {\n  ...\n});',
+    'export default makeScene2D (view) ->\n  ...',
+    'export default makeScene2D(function* (view) {\n  ...\n});',
+  ],
+  ['Constant', 'const box = createRef<Rect>();', 'box := createRef<Rect>()', 'const box = createRef<Rect>();'],
+  [
+    'Add nodes',
+    'view.add(<Rect ref={box} width={240} />);',
+    'view.add <Rect ref={box} width={240} />',
+    'view.add(<Rect ref={box} width={240} />);',
+  ],
+  ['Tween', 'yield* box().position.x(300, 1);', 'yield* box().position.x 300, 1', 'yield* box().position.x(300, 1);'],
+  ['Arrow function', 'width={() => scale() * 120}', 'width={=> scale() * 120}', 'width={() => scale() * 120}'],
+  [
+    'One parameter',
+    'items.map(item => item.id)',
+    'items.map (item) => item.id',
+    'items.map(item => item.id)',
+  ],
+  [
+    'Loop',
+    'for (const node of nodes) {\n  yield* node.opacity(1, 0.3);\n}',
+    'for node of nodes\n  yield* node.opacity 1, 0.3',
+    'for (const node of nodes) {\n  yield* node.opacity(1, 0.3);\n}',
+  ],
+  ['Custom signal', '@signal()\ndeclare readonly size: SimpleSignal<number>;', '@@signal()\ndeclare readonly size: SimpleSignal<number>', '@signal()\ndeclare readonly size: SimpleSignal<number>;'],
 ];
 
-function Table(props: {rows: [string, string, string][]; from: string}) {
+function Table(props: {rows: Row[]; from: string; tsx: boolean}) {
   return (
     <table>
       <thead>
         <tr>
           <th />
           <th>{props.from}</th>
-          <th>Here (Civet)</th>
+          <th>{props.tsx ? 'Here (TSX)' : 'Here (Civet)'}</th>
         </tr>
       </thead>
       <tbody>
@@ -50,7 +83,7 @@ function Table(props: {rows: [string, string, string][]; from: string}) {
                 <pre>{row[1]}</pre>
               </td>
               <td>
-                <pre>{row[2]}</pre>
+                <pre>{props.tsx ? row[3] : row[2]}</pre>
               </td>
             </tr>
           )}
@@ -62,34 +95,39 @@ function Table(props: {rows: [string, string, string][]; from: string}) {
 
 export function Guide() {
   const ed = useEditor();
-  return (
-    <Show when={ed.vocabulary() === 'native'} fallback={<ManimGuide />}>
-      <div class="guide side-scroll">
-        <p class="muted pad">
-          This scene uses Canvas Commons' own API: nodes as JSX, refs, signals and explicit <code>yield*</code>. Nothing in
-          it is Manim-specific. It can be written in Civet or, with the Lab's TSX choice, exactly as in Motion Canvas.
-        </p>
-        <Table rows={nativeRows} from="Motion Canvas (TSX)" />
-        <p class="muted pad">
-          Each top-level <code>yield*</code> statement is one step on the timeline. To use Manim's mobjects in the same
-          file, add <code>from manim import *</code> and write a <code>Scene</code> class instead.
-        </p>
-      </div>
-    </Show>
-  );
-}
-
-function ManimGuide() {
+  const tsx = () => ed.language() === 'tsx';
   return (
     <div class="guide side-scroll">
+      <Show
+        when={ed.vocabulary() === 'native'}
+        fallback={
+          <>
+            <p class="muted pad">
+              This scene uses the Manim vocabulary, a library on top of Canvas Commons.{' '}
+              {tsx()
+                ? 'In TSX nothing is implicit: imports are listed, every animation call has its yield*, and keyword arguments are an object.'
+                : 'In Civet it reads close to Python: calls need no parentheses, := declares a constant, @ is self.'}
+            </p>
+            <Table rows={manimRows} from="Manim (Python)" tsx={tsx()} />
+            <p class="muted pad">
+              Every method exists in <code>snake_case</code> and <code>camelCase</code>. Native nodes can join in: add one
+              to a <code>VGroup</code>, or pass a tween to <code>play</code>.
+            </p>
+          </>
+        }
+      >
+        <p class="muted pad">
+          This scene uses Canvas Commons' own API: nodes as JSX, refs, signals and explicit <code>yield*</code>.{' '}
+          {tsx() ? 'In TSX it is exactly what Motion Canvas users write.' : 'In Civet the same code needs less punctuation.'}
+        </p>
+        <Table rows={nativeRows} from="Motion Canvas (TSX)" tsx={tsx()} />
+        <p class="muted pad">
+          Each <code>yield*</code> statement is one step on the timeline. Manim mobjects can join in: import them from{' '}
+          <code>manim</code> and drive them with <code>useManim(view)</code>.
+        </p>
+      </Show>
       <p class="muted pad">
-        Scenes are Civet: TypeScript with indentation-based, Python-like syntax. The Manim vocabulary is a library on top of
-        Canvas Commons, so both APIs work in one file.
-      </p>
-      <Table rows={rows} from="Manim (Python)" />
-      <p class="muted pad">
-        Parentheses are optional for calls, <code>:=</code> declares a constant, <code>@</code> is <code>self</code>. Every
-        method exists in <code>snake_case</code> and <code>camelCase</code>.
+        The Lab's "Source language" choice converts the open scene between Civet and TSX.
       </p>
     </div>
   );

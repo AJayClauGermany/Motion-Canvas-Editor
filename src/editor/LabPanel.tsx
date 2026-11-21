@@ -43,14 +43,20 @@ export function LabPanel() {
               <h3>{group}</h3>
               <For each={flags.filter(f => f.group === group)}>
                 {flag => (
-                  <div class="flag">
-                    <div class="flag-title">{flag.title}</div>
+                  <div class={['flag', {inactive: !!flag.civetOnly && ed.settings.language === 'tsx'}]}>
+                    <div class="flag-title">
+                      {flag.title}
+                      <Show when={flag.civetOnly && ed.settings.language === 'tsx'}>
+                        <span class="flag-note">Civet only: TSX always writes this out</span>
+                      </Show>
+                    </div>
                     <div class="flag-question">{flag.question}</div>
                     <div class="segmented" role="group" aria-label={flag.title}>
                       <For each={flag.options}>
                         {option => (
                           <button
                             class={{on: ed.settings[flag.key] === option.value}}
+                            disabled={!!flag.civetOnly && ed.settings.language === 'tsx'}
                             onClick={() => ed.setFlag(flag.key, option.value as never)}
                           >
                             {option.label}

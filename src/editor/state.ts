@@ -5,9 +5,11 @@
  */
 import {createContext, createMemo, createSignal, createStore, reconcile, useContext} from 'solid-js';
 import {compileScene, CompileResult, Diagnostic} from '../runtime/compile';
+import {civetToTsx, tsxToCivet} from '../runtime/convert';
 import {pythonToCivet} from '../runtime/python';
 import {toAt, toCamelCase, toExplicitYield, toImplicitYield, toSelf, toSnakeCase} from '../runtime/dialect';
 import {Engine, InspectInfo, ItemId, OutlineNode, SceneEntry, Timeline} from '../runtime/engine';
+import {apiNames} from '../manim';
 import {BLANK_MANIM, BLANK_NATIVE, BLANK_NATIVE_TSX, Example, examples} from './examples';
 import {defaults, hashParam, loadSettings, qualityOf, saveSettings, Settings} from './settings';
 
@@ -16,7 +18,11 @@ const CANONICAL: Dialect = {naming: 'snake', yieldStyle: 'implicit', selfStyle: 
 
 /** Rewrite Manim-style source from one dialect variant to another. */
 export function convertDialect(code: string, from: Dialect, to: Dialect): string {
-  if (!/^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code)) return code;
+  if (!/^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code)) {
+    // A TSX scene on the Manim layer has no sugar to convert, only names.
+    if (!/from\s*['"]manim['"]/.test(code) || from.naming === to.naming) return code;
+    return to.naming === 'camel' ? toCamelCase(code) : toSnakeCase(code);
+  }
   let out = code;
   // Normalise to `@` first so the other conversions see one spelling.
   if (from.selfStyle === 'self') out = toAt(out);
@@ -32,24 +38,30 @@ const dialectOf = (s: Settings): Dialect => ({naming: s.naming, yieldStyle: s.yi
 
 export type Language = 'civet' | 'tsx';
 
+/** Where a converted buffer came from, so switching back is lossless while it is unedited. */
+interface Provenance {
+  origin: {language: Language; code: string};
+  generated: string;
+}
+
 interface StoredBuffer extends Dialect {
   code: string;
+  language?: Language;
+  provenance?: Provenance;
 }
-/** Civet and TSX versions of a document are separate buffers. */
-const bufferKey = (slug: string, language: Language = 'civet') =>
-  `mce.buffer.v1.${slug}${language === 'tsx' ? '.tsx' : ''}`;
-function readBuffer(slug: string, language: Language = 'civet'): StoredBuffer | null {
+const bufferKey = (slug: string) => `mce.buffer.v2.${slug}`;
+function readBuffer(slug: string): StoredBuffer | null {
   try {
-    const raw = localStorage.getItem(bufferKey(slug, language));
+    const raw = localStorage.getItem(bufferKey(slug));
     return raw ? (JSON.parse(raw) as StoredBuffer) : null;
   } catch {
     return null;
   }
 }
-function writeBuffer(slug: string, buffer: StoredBuffer | null, language: Language = 'civet') {
+function writeBuffer(slug: string, buffer: StoredBuffer | null) {
   try {
-    if (buffer) localStorage.setItem(bufferKey(slug, language), JSON.stringify(buffer));
-    else localStorage.removeItem(bufferKey(slug, language));
+    if (buffer) localStorage.setItem(bufferKey(slug), JSON.stringify(buffer));
+    else localStorage.removeItem(bufferKey(slug));
   } catch {
     // Storage may be unavailable; edits then live for the session only.
   }
@@ -74,9 +86,8 @@ const SCRATCH_NATIVE: Example = {
   tsx: BLANK_NATIVE_TSX,
 };
 
-/** Which language a document is edited in, given the Lab choice. */
-export const languageOf = (example: Example, s: Settings): Language =>
-  example.style === 'canvas-commons' && s.nativeLanguage === 'tsx' && example.tsx !== undefined ? 'tsx' : 'civet';
+/** Every document is edited in the language chosen in the Lab. */
+export const languageOf = (_example: Example, s: Settings): Language => s.language;
 
 export function createEditorState() {
   const engine = new Engine();
@@ -88,24 +99,65 @@ export function createEditorState() {
     const wanted = hashParam('example');
     return all.find(e => e.slug === wanted)?.slug ?? all[0].slug;
   })();
-  const pristine = (example: Example, s: Settings) =>
-    languageOf(example, s) === 'tsx'
-      ? example.tsx!
-      : example.style === 'manim'
-        ? convertDialect(example.code, CANONICAL, dialectOf(s))
-        : example.code;
-  const bufferFor = (example: Example, s: Settings): string => {
-    const language = languageOf(example, s);
-    const stored = readBuffer(example.slug, language);
-    if (!stored) return pristine(example, s);
-    return example.style === 'manim' ? convertDialect(stored.code, stored, dialectOf(s)) : stored.code;
+  const compileOptionsOf = (s: Settings) => ({
+    implicitYield: s.yieldStyle === 'implicit',
+    operators: s.operators === 'on',
+    hashComments: true,
+  });
+  const pristineCache = new Map<string, string>();
+  /** The untouched example in the current language and dialect. */
+  const pristine = (example: Example, s: Settings): string => {
+    const key = `${example.slug}|${s.language}|${s.naming}|${s.yieldStyle}|${s.selfStyle}`;
+    let code = pristineCache.get(key);
+    if (code === undefined) {
+      const civet = example.style === 'manim' ? convertDialect(example.code, CANONICAL, dialectOf(s)) : example.code;
+      if (s.language === 'civet') code = civet;
+      // A native example ships its TSX; anything else is generated from the Civet.
+      else code = example.style === 'canvas-commons' && example.tsx !== undefined ? example.tsx : civetToTsx(civet, apiNames, compileOptionsOf(s)).code;
+      pristineCache.set(key, code);
+    }
+    return code;
+  };
+  /** Convert a buffer to another language; lossless back to its origin while unedited. */
+  const convertLanguage = (
+    code: string,
+    from: Language,
+    to: Language,
+    s: Settings,
+    provenance?: Provenance,
+  ): {code: string; ok: boolean; notes: string[]; provenance?: Provenance} => {
+    if (from === to) return {code, ok: true, notes: [], provenance};
+    if (provenance && provenance.generated === code && provenance.origin.language === to) {
+      return {code: provenance.origin.code, ok: true, notes: []};
+    }
+    const result = to === 'tsx' ? civetToTsx(code, apiNames, compileOptionsOf(s)) : tsxToCivet(code, compileOptionsOf(s));
+    if (!result.ok) return {code, ok: false, notes: result.notes};
+    // tsxToCivet leaves `yield*` explicit and `@`; apply the chosen dialect on top.
+    const out =
+      to === 'civet' ? convertDialect(result.code, {naming: s.naming, yieldStyle: 'explicit', selfStyle: 'at'}, dialectOf(s)) : result.code;
+    return {code: out, ok: true, notes: result.notes, provenance: {origin: {language: from, code}, generated: out}};
+  };
+  const bufferFor = (example: Example, s: Settings): {code: string; provenance?: Provenance} => {
+    const stored = readBuffer(example.slug);
+    if (!stored) return {code: pristine(example, s)};
+    const language = stored.language ?? 'civet';
+    if (language !== s.language) {
+      const converted = convertLanguage(stored.code, language, s.language, s, stored.provenance);
+      // If it cannot be converted, the untouched example is better than the wrong language.
+      return converted.ok ? converted : {code: pristine(example, s)};
+    }
+    return {
+      code: language === 'civet' ? convertDialect(stored.code, stored, dialectOf(s)) : stored.code,
+      provenance: stored.provenance,
+    };
   };
   /** Save (or clear) the current document's edits. */
-  const store = (example: Example, s: Settings, code: string | null) =>
-    writeBuffer(example.slug, code === null ? null : {code, ...dialectOf(s)}, languageOf(example, s));
-  const hasEdits = (example: Example, s: Settings) => readBuffer(example.slug, languageOf(example, s)) !== null;
+  const store = (example: Example, s: Settings, code: string | null, provenance?: Provenance) =>
+    writeBuffer(example.slug, code === null ? null : {code, ...dialectOf(s), language: s.language, provenance});
+  const hasEdits = (example: Example, _s: Settings) => readBuffer(example.slug) !== null;
 
-  const initialSource = bufferFor(all.find(e => e.slug === initialSlug)!, initialSettings);
+  const initialBuffer = bufferFor(all.find(e => e.slug === initialSlug)!, initialSettings);
+  const initialSource = initialBuffer.code;
   // Apply the persisted preview quality before the first run.
   const initialQuality = qualityOf(initialSettings.quality);
   engine.fps = initialQuality.fps;
@@ -141,6 +193,8 @@ export function createEditorState() {
   const [importOpen, setImportOpen] = createSignal(false);
   const [importNotes, setImportNotes] = createSignal<string[]>([]);
   const [fileName, setFileName] = createSignal<string | null>(null);
+  /** Messages about the last language conversion, shown under the code pane header. */
+  const [notice, setNotice] = createSignal<string[]>([]);
 
   // Plain mirrors of signal state for use inside actions (reads lag writes).
   let current = {
@@ -149,6 +203,7 @@ export function createEditorState() {
     settings: {...initialSettings} as Settings,
     timeline: null as Timeline | null,
     selected: null as ItemId | null,
+    provenance: initialBuffer.provenance as Provenance | undefined,
     fps: engine.fps,
     scene: null as string | null,
   };
@@ -158,7 +213,7 @@ export function createEditorState() {
   const language = createMemo<Language>(() => languageOf(example(), settings as Settings));
   /** Whether the open document uses the Manim vocabulary or Canvas Commons' own. */
   const vocabulary = createMemo<'manim' | 'native'>(() =>
-    /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(source()) ? 'manim' : 'native',
+    /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(source()) || /from\s*['"]manim['"]/.test(source()) ? 'manim' : 'native',
   );
   const time = createMemo(() => frame() / fps());
   const durationSeconds = createMemo(() => duration() / fps());
@@ -227,12 +282,7 @@ export function createEditorState() {
     setStatus('running');
     const started = performance.now();
     const s = current.settings;
-    const result = compileScene(current.source, {
-      implicitYield: s.yieldStyle === 'implicit',
-      operators: s.operators === 'on',
-      hashComments: true,
-      language: languageOf(all.find(e => e.slug === current.slug)!, s),
-    });
+    const result = compileScene(current.source, {...compileOptionsOf(s), language: s.language});
     setCompiled(result);
     const ok = await engine.load(result, current.scene);
     if (ticket !== runCount) return;
@@ -263,6 +313,15 @@ export function createEditorState() {
     setSourceVersion(v => v + 1);
   };
 
+  /** Record a Lab choice without side effects on the open document. */
+  const commitFlag = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    current.settings = {...current.settings, [key]: value} as Settings;
+    setSettings(s => {
+      (s as any)[key] = value;
+    });
+    persist();
+  };
+
   const actions = {
     /** The buffer as of now (signals lag writes by a microtask). */
     getSource: () => current.source,
@@ -274,7 +333,8 @@ export function createEditorState() {
       const ex = all.find(e => e.slug === current.slug)!;
       const changed = code !== pristine(ex, current.settings);
       setDirty(changed);
-      store(ex, current.settings, changed ? code : null);
+      store(ex, current.settings, changed ? code : null, current.provenance);
+      if (notice().length) setNotice([]);
       scheduleRun();
     },
     run,
@@ -288,7 +348,10 @@ export function createEditorState() {
       setSelected(null);
       setExampleSlug(slug);
       setDirty(hasEdits(ex, current.settings));
-      replaceSource(bufferFor(ex, current.settings));
+      const buffer = bufferFor(ex, current.settings);
+      current.provenance = buffer.provenance;
+      setNotice([]);
+      replaceSource(buffer.code);
       persist();
       engine.togglePlayback(false);
       void run().then(() => {
@@ -301,24 +364,32 @@ export function createEditorState() {
      * `from manim import *` line) goes to the Manim scratch; anything else is a
      * native scene, in TSX when the file says so.
      */
-    openScratch(code: string, name: string | null = null) {
-      const isTsx = !!name && /\.(tsx?|jsx?)$/i.test(name);
-      const isManim = !isTsx && /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code);
-      if (isManim) {
-        writeBuffer(SCRATCH.slug, {code, ...CANONICAL});
-      } else {
-        const language: Language = isTsx ? 'tsx' : 'civet';
-        if (current.settings.nativeLanguage !== language) actions.setFlag('nativeLanguage', language);
-        writeBuffer(SCRATCH_NATIVE.slug, {code, ...CANONICAL}, language);
-      }
+    openScratch(code: string, name: string | null = null, as?: Language, dialect: Dialect = CANONICAL) {
+      const language: Language = as ?? (!!name && /\.(tsx?|jsx?)$/i.test(name) ? 'tsx' : 'civet');
+      const isManim =
+        /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code) || /from\s*['"]manim['"]/.test(code);
+      // A file decides its own language; follow it rather than converting it.
+      if (current.settings.language !== language) commitFlag('language', language);
+      writeBuffer(isManim ? SCRATCH.slug : SCRATCH_NATIVE.slug, {code, ...dialect, language});
       setFileName(name);
       actions.loadExample(isManim ? SCRATCH.slug : SCRATCH_NATIVE.slug, true);
     },
+    /**
+     * Translate Manim Python into the author's language and dialect:
+     * Python → Civet, then on to TSX when TSX is chosen.
+     */
+    convertPython(python: string): {code: string; notes: string[]; language: Language} {
+      const s = current.settings;
+      const {code, notes} = pythonToCivet(python);
+      const tsx = s.language === 'tsx' ? civetToTsx(code, apiNames, compileOptionsOf(s)) : null;
+      if (tsx?.ok) return {code: tsx.code, notes, language: 'tsx'};
+      return {code: convertDialect(code, CANONICAL, dialectOf(s)), notes, language: 'civet'};
+    },
     /** Convert pasted Manim Python and open the result. */
     importPython(python: string) {
-      const {code, notes} = pythonToCivet(python);
+      const {code, notes, language} = actions.convertPython(python);
       setImportNotes(notes);
-      actions.openScratch(code, null);
+      actions.openScratch(code, null, language, dialectOf(current.settings));
     },
     setImportOpen(open: boolean) {
       setImportOpen(open);
@@ -336,6 +407,8 @@ export function createEditorState() {
     resetExample() {
       const ex = all.find(e => e.slug === current.slug)!;
       store(ex, current.settings, null);
+      current.provenance = undefined;
+      setNotice([]);
       setDirty(false);
       replaceSource(pristine(ex, current.settings));
       void run();
@@ -344,11 +417,30 @@ export function createEditorState() {
       const before = current.settings;
       if (before[key] === value) return;
       const after = {...before, [key]: value} as Settings;
-      current.settings = after;
-      setSettings(s => {
-        (s as any)[key] = value;
-      });
-      persist();
+      if (key === 'language') {
+        // Convert the open scene first: if that fails, the language stays.
+        const ex = all.find(e => e.slug === current.slug)!;
+        if (current.source === pristine(ex, before)) {
+          commitFlag(key, value);
+          current.provenance = undefined;
+          setNotice([]);
+          setDirty(false);
+          replaceSource(pristine(ex, after));
+        } else {
+          const converted = convertLanguage(current.source, before.language, after.language, after, current.provenance);
+          setNotice(converted.notes);
+          if (!converted.ok) return;
+          commitFlag(key, value);
+          current.provenance = converted.provenance;
+          replaceSource(converted.code);
+          const changed = converted.code !== pristine(ex, after);
+          setDirty(changed);
+          store(ex, after, changed ? converted.code : null, converted.provenance);
+        }
+        void run();
+        return;
+      }
+      commitFlag(key, value);
       if (key === 'naming' || key === 'yieldStyle' || key === 'selfStyle') {
         const ex = all.find(e => e.slug === current.slug)!;
         if (ex.style === 'manim') {
@@ -356,17 +448,9 @@ export function createEditorState() {
           replaceSource(converted);
           const changed = converted !== pristine(ex, after);
           setDirty(changed);
-          store(ex, after, changed ? converted : null);
+          store(ex, after, changed ? converted : null, current.provenance);
         }
         void run();
-      } else if (key === 'nativeLanguage') {
-        // The Civet and TSX versions of a native scene are separate documents.
-        const ex = all.find(e => e.slug === current.slug)!;
-        if (ex.style === 'canvas-commons') {
-          setDirty(hasEdits(ex, after));
-          replaceSource(bufferFor(ex, after));
-          void run();
-        }
       } else if (key === 'operators') {
         void run();
       } else if (key === 'quality') {
@@ -483,6 +567,7 @@ export function createEditorState() {
     compileMs,
     importOpen,
     importNotes,
+    notice,
     fileName,
     canRecord: engine.canRecord() && canDownload,
     /** Hosted previews (claude.ai artifacts) cannot hand files to the viewer. */

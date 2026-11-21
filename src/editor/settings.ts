@@ -14,6 +14,8 @@ export interface Flag {
   title: string;
   question: string;
   options: FlagOption[];
+  /** The choice is about Civet syntax and has no effect on a TSX scene. */
+  civetOnly?: boolean;
 }
 
 export interface Settings {
@@ -22,7 +24,7 @@ export interface Settings {
   naming: 'snake' | 'camel';
   selfStyle: 'at' | 'self';
   operators: 'on' | 'off';
-  nativeLanguage: 'civet' | 'tsx';
+  language: 'civet' | 'tsx';
   runMode: 'live' | 'save';
   timeline: 'blocks' | 'steps' | 'scrubber';
   cursorSync: 'off' | 'seek';
@@ -39,7 +41,7 @@ export const defaults: Settings = {
   naming: 'snake',
   selfStyle: 'at',
   operators: 'on',
-  nativeLanguage: 'civet',
+  language: 'civet',
   runMode: 'live',
   timeline: 'blocks',
   cursorSync: 'off',
@@ -54,6 +56,7 @@ export const flags: Flag[] = [
   {
     key: 'yieldStyle',
     group: 'Language',
+    civetOnly: true,
     title: 'Animation calls',
     question: 'Should `@play` read like Manim, or show the generator machinery?',
     options: [
@@ -74,6 +77,7 @@ export const flags: Flag[] = [
   {
     key: 'selfStyle',
     group: 'Language',
+    civetOnly: true,
     title: 'Scene reference',
     question: 'Civet’s `@` shorthand, or Python’s explicit `self`?',
     options: [
@@ -92,13 +96,17 @@ export const flags: Flag[] = [
     ],
   },
   {
-    key: 'nativeLanguage',
+    key: 'language',
     group: 'Language',
-    title: 'Canvas Commons scenes',
-    question: 'For native-style scenes: one language everywhere, or the TSX that Motion Canvas users already write?',
+    title: 'Source language',
+    question: 'Civet everywhere, or the TypeScript + JSX that Motion Canvas users already write?',
     options: [
-      {value: 'civet', label: 'Civet', hint: 'Native scenes are Civet too: same nodes, refs and signals, lighter syntax.'},
-      {value: 'tsx', label: 'TSX', hint: 'Plain TypeScript + JSX, compiled without Civet. Motion Canvas scenes paste in unchanged.'},
+      {value: 'civet', label: 'Civet', hint: 'Indentation-based and close to Python. All the Manim-style sugar is available.'},
+      {
+        value: 'tsx',
+        label: 'TSX',
+        hint: 'Plain TypeScript + JSX, compiled without Civet. Works for both styles; switching converts the open scene.',
+      },
     ],
   },
   {

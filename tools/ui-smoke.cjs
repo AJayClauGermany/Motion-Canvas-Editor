@@ -160,9 +160,27 @@ const check = (name, ok, detail = '') => {
   await page.getByRole('button', {name: 'Civet', exact: true}).click();
   await settle(600);
   check('switching back restores the Civet source', /makeScene2D \(view\) ->/.test(await source()));
-  await page.getByRole('button', {name: 'Close Lab'}).click();
+
+  // The language switch converts a Manim-style scene too, and an edited one round-trips.
   await page.locator('.topbar select').first().selectOption('square-to-circle');
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 15000}).catch(() => {});
+  await page.getByRole('button', {name: 'TSX', exact: true}).click();
+  await settle(900);
+  check('Manim scene converts to TSX with an import list', /import \{[^}]*Scene[^}]*\} from 'manim'/.test(await source()) && /yield\* this\.play\(Create\(square\)\)/.test(await source()));
+  check('TSX Manim scene runs with the same steps', (await page.locator('.block').count()) === 3 && (await page.locator('.problems li').count()) === 0);
+  await shot('11-manim-tsx');
+  await page.locator('.code-pane .cm-line', {hasText: 'FadeOut(square)'}).click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('\nyield* this.wait(1)');
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 4, null, {timeout: 10000}).catch(() => {});
+  check('editing the TSX scene adds a step', (await page.locator('.block').count()) === 4);
+  await page.getByRole('button', {name: 'Civet', exact: true}).click();
+  await settle(900);
+  check('an edited TSX scene converts back to Civet and still runs', /from manim import \*/.test(await source()) && /@wait\(1\)/.test(await source()) && (await page.locator('.block').count()) === 4 && (await page.locator('.problems li').count()) === 0);
+  check('the conversion says what it did', (await page.locator('.notice li').count()) >= 1);
+  await page.getByRole('button', {name: 'Reset', exact: true}).click();
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 15000}).catch(() => {});
+  await page.getByRole('button', {name: 'Close Lab'}).click();
   await page.locator('.transport .play').click();
 
   // Playback.

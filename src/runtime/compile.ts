@@ -374,8 +374,9 @@ export function compileScene(source: string, options: CompileOptions = defaultCo
       production: true,
     }).code;
     js = instrumentSteps(js, result.lineMap);
-    // Plain TSX keeps plain JavaScript arithmetic.
-    if (options.operators && !tsxMode) js = overloadOperators(js);
+    // Plain TSX keeps plain JavaScript arithmetic; a TSX scene that imports the
+    // Manim layer gets vector arithmetic, as its Civet counterpart does.
+    if (options.operators && (!tsxMode || /from\s*['"]manim['"]/.test(ts))) js = overloadOperators(js);
     if (result.classNames.length) {
       js += `\n;exports.__classes = {${result.classNames.join(', ')}};`;
     }

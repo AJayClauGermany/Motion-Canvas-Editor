@@ -1,5 +1,4 @@
 import {createSignal, For, Show} from 'solid-js';
-import {pythonToCivet} from '../runtime/python';
 import {useEditor} from './state';
 
 const SAMPLE = `from manim import *
@@ -23,7 +22,8 @@ class MovingFrameBox(Scene):
 export function ImportDialog() {
   const ed = useEditor();
   const [python, setPython] = createSignal('');
-  const preview = () => (python().trim() ? pythonToCivet(python()) : null);
+  const preview = () => (python().trim() ? ed.convertPython(python()) : null);
+  const target = () => (ed.language() === 'tsx' ? 'TSX' : 'Civet');
   let area!: HTMLTextAreaElement;
   const fill = (text: string) => {
     area.value = text;
@@ -36,7 +36,7 @@ export function ImportDialog() {
           <div>
             <h2>Import a Manim (Python) scene</h2>
             <p class="muted">
-              Paste Python on the left; the Civet translation appears on the right. The converter handles the syntax
+              Paste Python on the left; the {target()} translation appears on the right. The converter handles the syntax
               (classes, keyword arguments, lambdas, comprehensions, tuples, f-strings). Features the library lacks, such as
               3D, will still fail at run time.
             </p>
@@ -56,7 +56,7 @@ export function ImportDialog() {
             />
           </label>
           <label>
-            <span>Civet</span>
+            <span>{target()}</span>
             <pre>{preview()?.code ?? 'The translation will appear here.'}</pre>
           </label>
         </div>
