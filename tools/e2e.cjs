@@ -7,6 +7,8 @@
  *   node tools/e2e.cjs square moving   # only slugs containing these words
  *   node tools/e2e.cjs path/to/file.civet
  *
+ * A native example's `original.tsx` is rendered too, in TSX mode.
+ *
  * Starts a Vite dev server unless one is already listening on E2E_URL.
  */
 const {chromium} = require('playwright');
@@ -43,6 +45,9 @@ async function up() {
       if (!fs.existsSync(file)) continue;
       if (words.length && !words.some(w => slug.includes(w))) continue;
       files.push({slug, file});
+      // Native examples also ship the TSX they were ported from; it must run as is.
+      const tsx = path.join(dir, slug, 'original.tsx');
+      if (fs.existsSync(tsx)) files.push({slug: `${slug}.tsx`, file: tsx, options: {language: 'tsx'}});
     }
   }
   fs.mkdirSync(outDir, {recursive: true});
@@ -54,10 +59,10 @@ async function up() {
   await page.goto(base + '/harness.html');
   await page.waitForFunction(() => window.harness, null, {timeout: 120000});
   let failed = 0;
-  for (const {slug, file} of files) {
+  for (const {slug, file, options} of files) {
     pageErrors.length = 0;
     const source = fs.readFileSync(file, 'utf8');
-    const result = await page.evaluate(s => window.harness.run(s), source);
+    const result = await page.evaluate(([s, o]) => window.harness.run(s, o), [source, options ?? {}]);
     const info = await page.evaluate(() => window.harness.info());
     const problems = [...(result.diagnostics || []), ...(info.diagnostics || [])];
     const seen = new Set();

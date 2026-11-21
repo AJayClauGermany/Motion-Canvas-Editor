@@ -1,8 +1,18 @@
 # Motion Canvas Editor
 
-A prototype editor for Manim-style animations, written in Civet and rendered by
-Canvas Commons. You write a scene the way you would in Manim, and the editor
-shows it running next to the code, with a timeline of every `play` call.
+A prototype animation editor built on Canvas Commons. You write a scene in the
+style you prefer, and the editor shows it running next to the code, with a
+timeline of every step.
+
+It supports two styles, and the author chooses per scene:
+
+- **Manim style**: Manim's vocabulary (`Scene`, mobjects, `play`) in Civet.
+- **Canvas Commons style**: the engine's own API (`makeScene2D`, JSX nodes,
+  refs, signals), in Civet or in the TSX that Motion Canvas users already
+  write.
+
+Both get the same editor: timeline, outline, inspector, click-to-select and
+error lines. They can also be mixed in one scene.
 
 ```civet
 from manim import *
@@ -18,6 +28,19 @@ class SquareToCircle extends Scene
     @play Create square
     @play Transform square, circle
     @play FadeOut square
+```
+
+The same idea in Canvas Commons style:
+
+```civet
+import { makeScene2D, Circle } from "@canvas-commons/2d"
+import { createRef } from "@canvas-commons/core"
+
+export default makeScene2D (view) ->
+  circle := createRef<Circle>()
+  view.add <Circle ref={circle} size={240} fill="#58c4dd" />
+  yield* circle().scale 2, 1
+  yield* circle().position.x 300, 1
 ```
 
 This is a prototype built to get feedback. Several design choices are still
@@ -43,10 +66,10 @@ In the Claude Code cloud sandbox, run `tools/sandbox/setup.sh` first (see
 |---|---|
 | Code pane | Civet source with highlighting, completion for the Manim vocabulary, inline errors mapped to the right source line, and a marker on the line that is currently playing |
 | Preview | Live Canvas Commons render. Click a mobject to select it. Optional unit grid |
-| Timeline | One block per `play`/`wait`, labelled with your own source line. Click a block to seek there and jump to the line |
-| Scene panel | Mobjects on screen at the current frame (with their submobjects), and an inspector for the selected one |
-| Manim → Civet | A cheat sheet of the syntax differences |
-| Reference pane | The original Manim Python for an example, or the TypeScript that Civet produces, next to your source |
+| Timeline | One block per step, labelled with your own source line: each `play`/`wait` in Manim style, each `yield*` statement in Canvas Commons style. Click a block to seek there and jump to the line |
+| Scene panel | Mobjects and native nodes on screen at the current frame, and an inspector for the selected one |
+| Cheat sheet | Manim (Python) → Civet, or Motion Canvas (TSX) → Civet, depending on the open scene |
+| Reference pane | The source an example was ported from (Manim Python, or Canvas Commons TSX), or the compiled output, next to your source |
 | Import Python | Paste a Manim scene in Python; a converter rewrites it to Civet and opens it |
 | Export | Current frame as PNG, or a real-time video recording (Chromium only) |
 
@@ -66,6 +89,7 @@ notes on the clipboard as Markdown.
 | Method names | `snake_case` · `camelCase` (both always work) | `snake_case` |
 | Scene reference | `@play` · `self.play` | `@play` |
 | Vector math | `2 * UP + LEFT` via operator overloading · plain JS | overloading |
+| Canvas Commons scenes | Civet · TSX (compiled without Civet, so Motion Canvas scenes paste in unchanged) | Civet |
 | Layout | Studio · Split · Stage | Studio |
 | When to re-run | as you type · on Ctrl/Cmd+Enter | as you type |
 | Reference pane | hidden · Manim (Python) · compiled TS | hidden |
@@ -108,15 +132,31 @@ adding a variant is one entry there plus the code that reads it.
 - **`examples/`** holds the bundled scenes. Each has `scene.civet`, optionally
   the original `manim.py`, and `meta.json`.
 
-Scenes written in Canvas Commons' own style (`makeScene2D`, JSX, signals) run
-through the same pipeline; see `examples/canvas-commons-basics`.
+### Two styles, one pipeline
+
+| | Manim style | Canvas Commons style |
+|---|---|---|
+| Starts with | `from manim import *` and a `Scene` class | imports from `@canvas-commons/*` and `export default makeScene2D ...` |
+| Units | Manim units, y up, frame 8 tall | pixels, y down, 1920 × 1080 |
+| Language | Civet | Civet, or TSX (Lab choice, or open a `.tsx` file) |
+| Timeline step | each `@play` / `@wait` | each `yield*` statement of the scene function |
+| Outline and inspector | mobjects | nodes |
+| Examples | `examples/*` with `manim.py` | `examples/cc-*` with `original.tsx` |
+
+Nothing is translated between the two: a Manim `Scene` is itself a
+`makeScene2D` scene, and each mobject is drawn by a Canvas Commons node. That
+is why they mix. A Manim scene can add native nodes with `@view.add <Rect … />`
+and animate them with `yield*`, and mobjects can be written as JSX
+(`<Circle radius={2} color={BLUE} />`); see `examples/jsx-mobjects`. In TSX
+mode the compiler adds no sugar at all: no implicit `yield*`, no operator
+overloading, no `#` comments.
 
 ## Tests
 
 ```bash
 bun test                 # compiler, dialect, Python converter, Bézier and vector maths
 bun run typecheck
-node tools/e2e.cjs       # renders every example headless, writes contact sheets to artifacts/e2e/
+node tools/e2e.cjs       # renders every example (and each TSX original) headless, contact sheets in artifacts/e2e/
 node tools/ui-smoke.cjs  # drives the editor UI headless, screenshots in artifacts/ui/
 ```
 
@@ -133,8 +173,11 @@ example at `vite preview`).
   shape the way outlines do. `MathTex` and `Tex` are real outlines.
 - The Python converter translates syntax. It does not know numpy or Python's
   standard library beyond a small `np` shim.
-- The timeline has steps only for Manim-style scenes. Native Canvas Commons
-  scenes get the scrubber.
+- TSX mode does not support decorators, so custom components that declare
+  signals with `@signal()` do not compile there yet.
+- The Lab's language switches (naming, `yield*`, `self`) convert Manim-style
+  buffers only. Civet ⇄ TSX is a choice between two sources an example ships
+  with, not a converter.
 - Video export records in real time with `MediaRecorder`, which the Linux
   desktop webview (WebKitGTK) does not support. Frame-exact rendering through
   Canvas Commons' renderer is not wired up yet.

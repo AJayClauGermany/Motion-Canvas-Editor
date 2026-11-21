@@ -9,6 +9,12 @@ import * as core from '@canvas-commons/core';
 import {
   createSceneMetadata,
   createSettingsMetadata,
+  endPlayback,
+  endScene,
+  startPlayback,
+  startScene,
+  useScene,
+  useThread,
   Logger,
   LogLevel,
   Player,
@@ -19,7 +25,7 @@ import {
 } from '@canvas-commons/core';
 import type {FullSceneDescription, Project, SceneDescription} from '@canvas-commons/core';
 import * as manim from '../manim';
-import {api, apiNames, config, makeManimScene, Mobject, Scene, SceneReport, VMobject} from '../manim';
+import {api, apiNames, config, makeManimScene, MobNode, Mobject, Scene, SceneReport, VMobject} from '../manim';
 import {sceneFrameMarker as currentFrameMarker, setSceneSourceMarker} from '../manim/util';
 import type {CompileResult, Diagnostic} from './compile';
 
@@ -45,9 +51,13 @@ export interface Timeline {
   duration: number;
 }
 
+/** A mobject id (number) or a Canvas Commons node key (string). */
+export type ItemId = number | string;
+
 export interface OutlineNode {
-  id: number;
+  id: ItemId;
   name: string;
+  /** `node` for native Canvas Commons nodes, otherwise the mobject kind. */
   kind: string;
   line?: number;
   color?: string;
@@ -55,31 +65,25 @@ export interface OutlineNode {
   children: OutlineNode[];
 }
 
-export interface MobjectInfo {
-  id: number;
+export interface InspectRow {
+  label: string;
+  value: string;
+  swatch?: {color: string; opacity: number};
+}
+
+export interface InspectInfo {
+  id: ItemId;
   name: string;
   kind: string;
   line?: number;
-  center: [number, number];
-  width: number;
-  height: number;
-  fillColor: string;
-  fillOpacity: number;
-  strokeColor: string;
-  strokeOpacity: number;
-  strokeWidth: number;
-  zIndex: number;
-  points?: number;
-  submobjects: number;
-  updaters: number;
-  text?: string;
+  rows: InspectRow[];
 }
 
 export interface EngineEvents {
   frame(frame: number): void;
   duration(frames: number): void;
   state(state: {paused: boolean; loop: boolean; speed: number}): void;
-  timeline(timeline: Timeline): void;
+  timeline(timeline: Timeline | null): void;
   diagnostics(list: Diagnostic[]): void;
   rendered(): void;
 }
@@ -208,6 +212,48 @@ function isSceneDescription(value: unknown): value is SceneDescription {
   return typeof value === 'object' && value !== null && 'klass' in value && typeof (value as any).klass === 'function';
 }
 
+const num = (v: number) => (Math.round(v * 100) / 100).toString();
+
+function attempt<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Canvas Commons' classes by constructor. A production build minifies class
+ * names, but the export names survive, so nodes are named from this table.
+ */
+const nodeClassNames = new Map<unknown, string>(
+  Object.entries(cc2d)
+    .filter(([name, value]) => typeof value === 'function' && /^[A-Z]/.test(name))
+    .map(([name, value]) => [value, name]),
+);
+
+/** Class name of a native node; a user's own subclass keeps its own name. */
+function nodeName(node: any): string {
+  const known = nodeClassNames.get(node.constructor);
+  if (known) return known;
+  const own = node.constructor?.name;
+  if (own) return own;
+  for (let proto = Object.getPrototypeOf(node); proto; proto = Object.getPrototypeOf(proto)) {
+    const base = nodeClassNames.get(proto.constructor);
+    if (base) return base;
+  }
+  return 'Node';
+}
+
+/** A solid colour of a fill/stroke signal as hex, if it is one. */
+function styleColor(signal: any): string | undefined {
+  if (typeof signal !== 'function') return undefined;
+  return attempt(() => {
+    const value = signal();
+    return value && typeof value.hex === 'function' ? String(value.hex()) : undefined;
+  }, undefined);
+}
+
 export class Engine {
   public readonly stage = new Stage();
   public readonly canvas: HTMLCanvasElement = this.stage.finalBuffer;
@@ -280,6 +326,7 @@ export class Engine {
    */
   public async load(compiled: CompileResult, preferredScene?: string | null): Promise<boolean> {
     this.runtimeDiagnostics = [];
+    this.reported = false;
     if (!compiled.ok) {
       this.emit('diagnostics', compiled.diagnostics);
       return false;
@@ -340,10 +387,11 @@ export class Engine {
   }
 
   private async evaluate(compiled: CompileResult): Promise<Record<string, any>> {
-    const names = compiled.prelude ? apiNames : ['__op'];
+    const scope: Record<string, unknown> = this.runtimeScope;
+    const names = [...(compiled.prelude ? apiNames : ['__op']), ...Object.keys(scope)];
     const factory = await makeSceneFactory(names, compiled.js);
     this.frameMarker = currentFrameMarker();
-    const body = factory(...names.map(n => api[n]));
+    const body = factory(...names.map(n => (n in scope ? scope[n] : api[n])));
     const module = {exports: {} as Record<string, any>};
     const require = (id: string) => {
       const mod = MODULES[id];
@@ -391,8 +439,15 @@ export class Engine {
       player.onStateChanged.subscribe(state =>
         this.emit('state', {paused: state.paused, loop: state.loop, speed: state.speed}),
       );
+      // A scene that reported no steps (no makeScene2D literal, an early
+      // return) must not keep showing the previous scene's timeline.
+      player.onRecalculated.subscribe(() => {
+        if (!this.reported) this.emit('timeline', null);
+      });
       player.toggleLoop(true);
     } else {
+      const previous: any = this.player.playback.currentScene;
+      if (previous) previous.manim = undefined;
       this.onReplaced!.current = this.toFullScene(description, name);
     }
   }
@@ -409,12 +464,52 @@ export class Engine {
   }
 
   private handleReport(report: SceneReport) {
+    this.reported = true;
     this.emit('timeline', {
       sceneName: report.sceneName,
       duration: report.duration,
       sections: report.sections.map(s => ({...s, line: this.mapLine(s.line)})),
-      segments: report.segments.map(s => ({...s, line: this.mapLine(s.line)})),
+      // Steps recorded by `__step` already carry source lines.
+      segments: report.segments.map(s => ({...s, line: (s as any).mapped ? s.line : this.mapLine(s.line)})),
     });
+  }
+
+  /**
+   * Timeline steps for `yield*` statements (see `instrumentSteps`). In a
+   * Manim scene they join the scene's own `play` steps; in a native scene
+   * they are the whole timeline.
+   */
+  private nativeSteps: TimelineSegment[] | null = null;
+  private reported = false;
+  private readonly runtimeScope = {
+    __stepsBegin: () => {
+      this.nativeSteps = [];
+      // The engine's scene object is reused across reloads; forget a Manim
+      // scene that ran in it before.
+      (useScene() as any).manim = undefined;
+    },
+    __step: (line: number, kind: 'play' | 'wait', name: string, thread: any) => this.recordStep(line, kind, name, thread),
+    __stepsDone: () => {
+      if (!this.nativeSteps) return;
+      this.reported = true;
+      this.emit('timeline', {
+        sceneName: this.activeScene ?? 'scene',
+        segments: this.nativeSteps,
+        sections: [],
+        duration: useThread().time(),
+      });
+    },
+  };
+
+  private *recordStep(line: number, kind: 'play' | 'wait', name: string, thread: any): Generator<any, any, any> {
+    const start = useThread().time();
+    const segment: TimelineSegment & {mapped: boolean} = {kind, label: name, start, end: start, line, mobjects: [], mapped: true};
+    const manim: Scene | undefined = (useScene() as any).manim;
+    if (manim) manim.segments.push(segment);
+    else this.nativeSteps?.push(segment);
+    const result = yield* thread;
+    segment.end = useThread().time();
+    return result;
   }
 
   // -------------------------------------------------------------- playback
@@ -458,67 +553,160 @@ export class Engine {
     return scene?.manim ?? null;
   }
 
-  public outline(): OutlineNode[] {
-    const scene = this.manimScene;
-    if (!scene) return [];
-    const walk = (m: Mobject): OutlineNode => ({
-      id: m.id,
-      name: m.name,
-      kind: m._kind(),
-      line: this.mapLine(m.sourceLine),
-      color: m.hasPoints() || m.submobjects.length ? m.getColor() : undefined,
-      visible: m.hasPoints() ? m.fillOpacity > 0.001 || (m.strokeOpacity > 0.001 && m.strokeWidth > 0) : true,
-      children: m.submobjects.map(walk),
-    });
-    return scene.mobjects.filter(m => m.name !== 'CameraFrame').map(walk);
+  private get scene2D(): any {
+    const scene: any = this.player?.playback.currentScene;
+    return scene && typeof scene.getView === 'function' ? scene : null;
   }
 
-  private findMobject(id: number): Mobject | null {
+  /** Read node signals with the scene active, as Canvas Commons expects. */
+  private inScene<T>(fn: (scene: any) => T, fallback: T): T {
+    const scene = this.scene2D;
+    if (!scene) return fallback;
+    startScene(scene);
+    startPlayback(scene.playback);
+    try {
+      return fn(scene);
+    } catch {
+      return fallback;
+    } finally {
+      endPlayback(scene.playback);
+      endScene(scene);
+    }
+  }
+
+  /** Native Canvas Commons nodes at the top of the view (not our mobject layer). */
+  private nativeRoots(scene: any): any[] {
+    const root = this.manimScene?.root;
+    return scene.getView().children().filter((n: any) => n !== root && !(n instanceof MobNode));
+  }
+
+  public outline(): OutlineNode[] {
+    const out: OutlineNode[] = [];
+    const manim = this.manimScene;
+    if (manim) {
+      const walk = (m: Mobject): OutlineNode => ({
+        id: m.id,
+        name: m.name,
+        kind: m._kind(),
+        line: this.mapLine(m.sourceLine),
+        color: m.hasPoints() || m.submobjects.length ? m.getColor() : undefined,
+        visible: m.hasPoints() ? m.fillOpacity > 0.001 || (m.strokeOpacity > 0.001 && m.strokeWidth > 0) : true,
+        children: m.submobjects.map(walk),
+      });
+      out.push(...manim.mobjects.filter(m => m.name !== 'CameraFrame').map(walk));
+    }
+    const walkNode = (n: any): OutlineNode => ({
+      id: String(n.key),
+      name: nodeName(n),
+      kind: 'node',
+      line: this.lineFromStack(n.creationStack),
+      color: styleColor(n.fill) ?? styleColor(n.stroke),
+      visible: attempt(() => n.opacity() > 0.001, true),
+      children: attempt(() => n.children().map(walkNode), []),
+    });
+    out.push(...this.inScene(scene => this.nativeRoots(scene).map(walkNode), []));
+    return out;
+  }
+
+  private findMobject(id: ItemId): Mobject | null {
     const scene = this.manimScene;
-    if (!scene) return null;
+    if (!scene || typeof id !== 'number') return null;
     for (const top of scene.mobjects) {
       for (const m of top.getFamily()) if (m.id === id) return m;
     }
     return null;
   }
 
-  public inspect(id: number): MobjectInfo | null {
+  public inspect(id: ItemId): InspectInfo | null {
+    if (typeof id === 'string') return this.inspectNode(id);
     const m = this.findMobject(id);
     if (!m) return null;
     const c = m.getCenter();
     const leaf = m.hasPoints() ? m : (m.familyMembersWithPoints()[0] ?? m);
-    return {
-      id: m.id,
-      name: m.name,
-      kind: m._kind(),
-      line: this.mapLine(m.sourceLine),
-      center: [c[0], c[1]],
-      width: m.getWidth(),
-      height: m.getHeight(),
-      fillColor: leaf.fillColor,
-      fillOpacity: leaf.fillOpacity,
-      strokeColor: leaf.strokeColor,
-      strokeOpacity: leaf.strokeOpacity,
-      strokeWidth: leaf.strokeWidth,
-      zIndex: m.zIndex,
-      points: m instanceof VMobject ? m.points.length : undefined,
-      submobjects: m.submobjects.length,
-      updaters: m.updaters.length,
-      text: (m as any).text ?? (m as any).texString ?? (m as any).char,
-    };
+    const text = (m as any).text ?? (m as any).texString ?? (m as any).char;
+    const rows: InspectRow[] = [];
+    if (text) rows.push({label: 'Text', value: String(text)});
+    rows.push(
+      {label: 'Center', value: `[${num(c[0])}, ${num(c[1])}]`},
+      {label: 'Size', value: `${num(m.getWidth())} × ${num(m.getHeight())}`},
+      {label: 'Fill', value: `${leaf.fillColor} · ${num(leaf.fillOpacity)}`, swatch: {color: leaf.fillColor, opacity: leaf.fillOpacity}},
+      {
+        label: 'Stroke',
+        value: `${leaf.strokeColor} · ${num(leaf.strokeOpacity)} · w${num(leaf.strokeWidth)}`,
+        swatch: {color: leaf.strokeColor, opacity: leaf.strokeOpacity},
+      },
+      {
+        label: 'Parts',
+        value: `${m.submobjects.length} submobjects${m instanceof VMobject ? ` · ${m.points.length / 4} curves` : ''}`,
+      },
+    );
+    if (m.updaters.length) rows.push({label: 'Updaters', value: String(m.updaters.length)});
+    rows.push({label: 'z-index', value: String(m.zIndex)});
+    return {id: m.id, name: m.name, kind: m._kind(), line: this.mapLine(m.sourceLine), rows};
   }
 
-  /** Bounding box of a mobject in Manim units, for the selection overlay. */
-  public bounds(id: number): [number, number, number, number] | null {
-    const m = this.findMobject(id);
-    return m ? m.getBounds() : null;
+  /** Properties of a native node, in Canvas Commons' own units (pixels, degrees). */
+  private inspectNode(key: string): InspectInfo | null {
+    return this.inScene(scene => {
+      const n: any = scene.getNode(key);
+      if (!n) return null;
+      const rows: InspectRow[] = [];
+      const add = (label: string, read: () => string | undefined) => {
+        const value = attempt(read, undefined);
+        if (value !== undefined) rows.push({label, value});
+      };
+      add('Text', () => (typeof n.text === 'function' ? String(n.text()) : undefined));
+      add('Position', () => `[${num(n.position().x)}, ${num(n.position().y)}] px`);
+      add('Size', () => (typeof n.width === 'function' ? `${num(n.width())} × ${num(n.height())} px` : undefined));
+      add('Rotation', () => (n.rotation() ? `${num(n.rotation())}°` : undefined));
+      add('Scale', () => (n.scale().x !== 1 || n.scale().y !== 1 ? `${num(n.scale().x)} × ${num(n.scale().y)}` : undefined));
+      add('Opacity', () => num(n.opacity()));
+      const fill = styleColor(n.fill);
+      if (fill) rows.push({label: 'Fill', value: fill, swatch: {color: fill, opacity: 1}});
+      const stroke = styleColor(n.stroke);
+      if (stroke) {
+        rows.push({
+          label: 'Stroke',
+          value: `${stroke} · w${num(attempt(() => n.lineWidth(), 0))}`,
+          swatch: {color: stroke, opacity: 1},
+        });
+      }
+      add('Children', () => (n.children().length ? String(n.children().length) : undefined));
+      return {id: key, name: nodeName(n), kind: 'node', line: this.lineFromStack(n.creationStack), rows};
+    }, null);
   }
 
-  /** Topmost top-level mobject under a point given in Manim units. */
-  public pick(x: number, y: number): number | null {
-    const scene = this.manimScene;
-    if (!scene) return null;
+  /** Bounding box in Manim units (frame centre origin, y up), for the selection overlay. */
+  public bounds(id: ItemId): [number, number, number, number] | null {
+    if (typeof id === 'number') {
+      const m = this.findMobject(id);
+      return m ? m.getBounds() : null;
+    }
+    return this.inScene(scene => {
+      const n: any = scene.getNode(id);
+      if (!n) return null;
+      const corners: {x: number; y: number}[] = n.cacheBBox().transformCorners(n.localToWorld());
+      const u = config.unit;
+      const xs = corners.map(c => (c.x - config.pixelWidth / 2) / u);
+      const ys = corners.map(c => -(c.y - config.pixelHeight / 2) / u);
+      return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] as [number, number, number, number];
+    }, null);
+  }
+
+  /** Topmost item under a point given in Manim units: a mobject, else a native node. */
+  public pick(x: number, y: number): ItemId | null {
     const u = config.unit;
+    const scene = this.manimScene;
+    // Native nodes are drawn above the mobject layer, so they win.
+    const node = this.inScene(scene2D => {
+      const key = scene2D.inspectPosition(x * u + config.pixelWidth / 2, -y * u + config.pixelHeight / 2);
+      if (key === null || key === undefined) return null;
+      const hit: any = scene2D.getNode(key);
+      if (!hit || hit instanceof MobNode || hit === scene?.root || hit === scene2D.getView()) return null;
+      return String(key);
+    }, null);
+    if (node !== null) return node;
+    if (!scene) return null;
     const tops = [...scene.mobjects].reverse();
     for (const top of tops) {
       if (top.name === 'CameraFrame') continue;

@@ -3,6 +3,7 @@ declare module 'virtual:examples' {
     slug: string;
     code: string;
     python?: string;
+    tsx?: string;
     meta: {
       title?: string;
       description?: string;

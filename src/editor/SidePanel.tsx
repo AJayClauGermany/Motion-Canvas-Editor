@@ -1,9 +1,9 @@
 import {createSignal, For, Show} from 'solid-js';
-import type {OutlineNode} from '../runtime/engine';
+import type {ItemId, OutlineNode} from '../runtime/engine';
 import {Guide} from './Guide';
 import {useEditor} from './state';
 
-function Row(props: {node: OutlineNode; depth: number; open: Set<number>; toggle(id: number): void}) {
+function Row(props: {node: OutlineNode; depth: number; open: Set<ItemId>; toggle(id: ItemId): void}) {
   const ed = useEditor();
   const hasChildren = () => props.node.children.length > 0;
   const isOpen = () => props.open.has(props.node.id);
@@ -30,6 +30,11 @@ function Row(props: {node: OutlineNode; depth: number; open: Set<number>; toggle
         </button>
         <span class="swatch" style={{background: props.node.color ?? 'transparent'}} />
         <span class="name">{props.node.name}</span>
+        <Show when={props.node.kind === 'node'}>
+          <span class="tag" title="Native Canvas Commons node">
+            node
+          </span>
+        </Show>
         <Show when={hasChildren()}>
           <span class="count">{props.node.children.length}</span>
         </Show>
@@ -48,8 +53,8 @@ function Row(props: {node: OutlineNode; depth: number; open: Set<number>; toggle
 
 function Outline() {
   const ed = useEditor();
-  const [open, setOpen] = createSignal(new Set<number>());
-  const toggle = (id: number) =>
+  const [open, setOpen] = createSignal(new Set<ItemId>());
+  const toggle = (id: ItemId) =>
     setOpen(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -60,7 +65,7 @@ function Outline() {
     <div class="outline">
       <Show
         when={ed.outline.nodes.length > 0}
-        fallback={<p class="muted pad">Nothing on screen at this frame. Mobjects appear here once they are added to the scene.</p>}
+        fallback={<p class="muted pad">Nothing on screen at this frame. Mobjects and nodes appear here once they are added to the scene.</p>}
       >
         <For each={ed.outline.nodes}>{node => <Row node={node} depth={0} open={open()} toggle={toggle} />}</For>
       </Show>
@@ -68,13 +73,11 @@ function Outline() {
   );
 }
 
-const num = (v: number) => (Math.round(v * 100) / 100).toString();
-
 function Inspector() {
   const ed = useEditor();
   return (
     <div class="inspector">
-      <Show when={ed.info()} fallback={<p class="muted pad">Select a mobject in the outline or click it in the preview.</p>}>
+      <Show when={ed.info()} fallback={<p class="muted pad">Select an item in the outline or click it in the preview.</p>}>
         {info => (
           <dl>
             <dt>Name</dt>
@@ -86,39 +89,19 @@ function Inspector() {
                 </button>
               </Show>
             </dd>
-            <Show when={info().text}>
-              <dt>Text</dt>
-              <dd class="mono">{info().text}</dd>
-            </Show>
-            <dt>Center</dt>
-            <dd class="mono">
-              [{num(info().center[0])}, {num(info().center[1])}]
-            </dd>
-            <dt>Size</dt>
-            <dd class="mono">
-              {num(info().width)} × {num(info().height)}
-            </dd>
-            <dt>Fill</dt>
-            <dd class="mono">
-              <span class="swatch" style={{background: info().fillColor, opacity: Math.max(info().fillOpacity, 0.15)}} />
-              {info().fillColor} · {num(info().fillOpacity)}
-            </dd>
-            <dt>Stroke</dt>
-            <dd class="mono">
-              <span class="swatch" style={{background: info().strokeColor, opacity: Math.max(info().strokeOpacity, 0.15)}} />
-              {info().strokeColor} · {num(info().strokeOpacity)} · w{num(info().strokeWidth)}
-            </dd>
-            <dt>Parts</dt>
-            <dd class="mono">
-              {info().submobjects} submobjects
-              <Show when={info().points !== undefined}> · {(info().points ?? 0) / 4} curves</Show>
-            </dd>
-            <Show when={info().updaters > 0}>
-              <dt>Updaters</dt>
-              <dd class="mono">{info().updaters}</dd>
-            </Show>
-            <dt>z-index</dt>
-            <dd class="mono">{info().zIndex}</dd>
+            <For each={info().rows} keyed={false}>
+              {row => (
+                <>
+                  <dt>{row().label}</dt>
+                  <dd class="mono" title={row().value}>
+                    <Show when={row().swatch}>
+                      {sw => <span class="swatch" style={{background: sw().color, opacity: Math.max(sw().opacity, 0.15)}} />}
+                    </Show>
+                    {row().value}
+                  </dd>
+                </>
+              )}
+            </For>
           </dl>
         )}
       </Show>
@@ -135,7 +118,7 @@ export function SidePanel() {
           Scene
         </button>
         <button class={{on: tab() === 'guide'}} onClick={() => setTab('guide')}>
-          Manim → Civet
+          Cheat sheet
         </button>
       </header>
       <Show when={tab() === 'scene'} fallback={<Guide />}>

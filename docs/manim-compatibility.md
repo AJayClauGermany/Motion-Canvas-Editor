@@ -320,6 +320,13 @@ move_dot_and_draw_curve()
   @wait 8.5
 ```
 
+## Relation to Canvas Commons style
+
+This document is about the Manim-style layer. Scenes can equally be written in
+Canvas Commons' own style (`makeScene2D`, JSX nodes, refs, signals), in Civet
+or TSX, with the same editor support; the README's "Two styles, one pipeline"
+section compares them. The two can share a scene, as the next section shows.
+
 ## Mobjects as JSX
 
 Mobjects can also be written as JSX, the way Canvas Commons nodes are. It is

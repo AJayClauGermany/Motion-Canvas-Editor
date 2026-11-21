@@ -1,0 +1,7 @@
+{
+  "title": "Signals",
+  "description": "A radius signal drives a circle, its radius arrow and two labels, with the area computed by a derived signal.",
+  "style": "canvas-commons",
+  "source": "https://canvascommons.io/docs/signals",
+  "order": 920
+}

@@ -1,0 +1,6 @@
+{
+  "title": "Layout animations",
+  "description": "Flexbox layouts animate as children are inserted, added, removed, moved between parents and re-laid out with editLayout.",
+  "style": "canvas-commons",
+  "order": 940
+}

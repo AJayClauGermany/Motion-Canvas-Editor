@@ -22,6 +22,7 @@ export interface Settings {
   naming: 'snake' | 'camel';
   selfStyle: 'at' | 'self';
   operators: 'on' | 'off';
+  nativeLanguage: 'civet' | 'tsx';
   runMode: 'live' | 'save';
   timeline: 'blocks' | 'steps' | 'scrubber';
   cursorSync: 'off' | 'seek';
@@ -38,6 +39,7 @@ export const defaults: Settings = {
   naming: 'snake',
   selfStyle: 'at',
   operators: 'on',
+  nativeLanguage: 'civet',
   runMode: 'live',
   timeline: 'blocks',
   cursorSync: 'off',
@@ -90,6 +92,16 @@ export const flags: Flag[] = [
     ],
   },
   {
+    key: 'nativeLanguage',
+    group: 'Language',
+    title: 'Canvas Commons scenes',
+    question: 'For native-style scenes: one language everywhere, or the TSX that Motion Canvas users already write?',
+    options: [
+      {value: 'civet', label: 'Civet', hint: 'Native scenes are Civet too: same nodes, refs and signals, lighter syntax.'},
+      {value: 'tsx', label: 'TSX', hint: 'Plain TypeScript + JSX, compiled without Civet. Motion Canvas scenes paste in unchanged.'},
+    ],
+  },
+  {
     key: 'layout',
     group: 'Editor',
     title: 'Layout',
@@ -117,7 +129,7 @@ export const flags: Flag[] = [
     question: 'What helps most while learning the dialect?',
     options: [
       {value: 'none', label: 'Hidden', hint: 'Only your source.'},
-      {value: 'python', label: 'Manim (Python)', hint: 'The original Python for the example, side by side.'},
+      {value: 'python', label: 'Original', hint: 'The source the example was ported from, side by side: Python for Manim examples, TSX for Canvas Commons examples.'},
       {value: 'compiled', label: 'Compiled TS', hint: 'What Civet turns your scene into.'},
     ],
   },

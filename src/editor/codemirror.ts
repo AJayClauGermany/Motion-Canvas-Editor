@@ -3,13 +3,15 @@ import {autocompletion, CompletionContext, CompletionResult} from '@codemirror/a
 import {indentWithTab} from '@codemirror/commands';
 import {HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting} from '@codemirror/language';
 import {coffeeScript} from '@codemirror/legacy-modes/mode/coffeescript';
-import {typescript} from '@codemirror/legacy-modes/mode/javascript';
+import {javascript} from '@codemirror/lang-javascript';
 import {python} from '@codemirror/legacy-modes/mode/python';
 import {Diagnostic as CmDiagnostic, lintGutter, setDiagnostics} from '@codemirror/lint';
 import {Compartment, EditorState, StateEffect, StateField} from '@codemirror/state';
 import {Decoration, DecorationSet, EditorView, keymap} from '@codemirror/view';
 import {tags as t} from '@lezer/highlight';
 import {basicSetup} from 'codemirror';
+import * as cc2d from '@canvas-commons/2d';
+import * as core from '@canvas-commons/core';
 import {apiNames} from '../manim';
 import type {Diagnostic} from '../runtime/compile';
 import {knownNames} from '../runtime/dialect';
@@ -68,7 +70,8 @@ const playingLine = StateField.define<DecorationSet>({
 const languages = {
   civet: () => StreamLanguage.define(coffeeScript),
   python: () => StreamLanguage.define(python),
-  ts: () => StreamLanguage.define(typescript),
+  // A real parser here: TSX scenes are edited in this mode, not just viewed.
+  ts: () => javascript({jsx: true, typescript: true}),
 };
 
 export interface CodeEditorOptions {
@@ -80,6 +83,8 @@ export interface CodeEditorOptions {
   onRun?(): void;
   /** Which spelling completions should offer. */
   naming?(): 'snake' | 'camel';
+  /** Whether to complete the Manim vocabulary or Canvas Commons' exports. */
+  vocabulary?(): 'manim' | 'native';
 }
 
 export interface CodeEditor {
@@ -88,10 +93,15 @@ export interface CodeEditor {
   setDiagnostics(list: Diagnostic[]): void;
   setPlayingLine(line: number | null): void;
   revealLine(line: number): void;
+  setLanguage(language: keyof typeof languages): void;
   destroy(): void;
 }
 
-function completions(naming: () => 'snake' | 'camel') {
+const nativeNames = [...new Set([...Object.keys(cc2d), ...Object.keys(core)])]
+  .filter(n => /^[A-Za-z][\w]*$/.test(n))
+  .sort();
+
+function completions(naming: () => 'snake' | 'camel', vocabulary: () => 'manim' | 'native') {
   let cache: {style: string; members: string[]; globals: string[]} | null = null;
   const lists = () => {
     const style = naming();
@@ -111,7 +121,10 @@ function completions(naming: () => 'snake' | 'camel') {
     const member = before === '.' || before === '@';
     if (!word && !(member && context.explicit)) return null;
     if (word && word.text.length < 2 && !context.explicit && !member) return null;
-    const {members, globals} = lists();
+    const native = vocabulary() === 'native';
+    // Native nodes expose their API as signals; only the exports are listed.
+    if (native && member) return null;
+    const {members, globals} = native ? {members: [], globals: nativeNames} : lists();
     return {
       from: word?.from ?? context.pos,
       options: (member ? members : globals).map(label => ({
@@ -126,6 +139,7 @@ function completions(naming: () => 'snake' | 'camel') {
 export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions): CodeEditor {
   let silent = false;
   const readOnly = new Compartment();
+  const language = new Compartment();
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -146,14 +160,14 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
         basicSetup,
         indentUnit.of('  '),
         EditorState.tabSize.of(2),
-        languages[options.language](),
+        language.of(languages[options.language]()),
         syntaxHighlighting(highlight),
         theme,
         playingLine,
         lintGutter(),
         readOnly.of([EditorState.readOnly.of(!!options.readOnly), EditorView.editable.of(!options.readOnly)]),
         ...(options.naming && !options.readOnly
-          ? [autocompletion({override: [completions(options.naming)], activateOnTyping: true})]
+          ? [autocompletion({override: [completions(options.naming, options.vocabulary ?? (() => 'manim'))], activateOnTyping: true})]
           : []),
         EditorView.updateListener.of(update => {
           if (update.docChanged && !silent) options.onChange?.(update.state.doc.toString());
@@ -199,6 +213,9 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
         effects: EditorView.scrollIntoView(info.from, {y: 'center'}),
       });
       silent = false;
+    },
+    setLanguage(name) {
+      view.dispatch({effects: language.reconfigure(languages[name]())});
     },
     destroy() {
       view.destroy();

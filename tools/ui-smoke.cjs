@@ -133,6 +133,38 @@ const check = (name, ok, detail = '') => {
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 15000}).catch(() => {});
   await page.locator('.transport .play').click();
 
+  // Native Canvas Commons scenes are first-class: steps, outline, inspector, TSX.
+  await page.locator('.topbar select').first().selectOption('cc-positioning');
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 5, null, {timeout: 15000}).catch(() => {});
+  check('native scene gets one step per yield*', (await page.locator('.block').count()) === 5);
+  await page.locator('.block').nth(1).click();
+  await settle(600);
+  check('native step highlights its source line', /yield\*/.test(await page.locator('.cm-playing-line').innerText().catch(() => '')));
+  check('outline lists native nodes', (await page.locator('.outline .row .tag').count()) >= 1);
+  await page.locator('.outline .row').first().click();
+  await settle(300);
+  check('inspector shows native node properties', /Position/.test(await page.locator('.inspector dl').innerText()));
+  check('native selection is outlined in the preview', (await page.locator('.overlay .selection').count()) === 1);
+  await page.locator('.code-pane').getByRole('button', {name: '+ TSX'}).click();
+  await settle(500);
+  check('TSX original is shown side by side', /makeScene2D\(function\* \(view\)/.test(await page.locator('.reference').innerText()));
+  await shot('09-native-civet');
+  await page.locator('.code-pane').getByRole('button', {name: 'Source'}).click();
+  await page.getByRole('button', {name: /Lab/}).click();
+  await page.getByRole('button', {name: 'TSX', exact: true}).click();
+  await page.waitForFunction(() => /function\* \(view\)/.test(document.querySelector('.code-pane .cm-content')?.textContent ?? ''), null, {timeout: 10000}).catch(() => {});
+  await settle(600);
+  check('TSX mode opens the TSX source', /function\* \(view\)/.test(await source()) && /cc-positioning\.tsx/.test(await page.locator('.file-tab').innerText()));
+  check('TSX source runs with the same steps', (await page.locator('.block').count()) === 5 && (await page.locator('.problems li').count()) === 0);
+  await shot('10-native-tsx');
+  await page.getByRole('button', {name: 'Civet', exact: true}).click();
+  await settle(600);
+  check('switching back restores the Civet source', /makeScene2D \(view\) ->/.test(await source()));
+  await page.getByRole('button', {name: 'Close Lab'}).click();
+  await page.locator('.topbar select').first().selectOption('square-to-circle');
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 15000}).catch(() => {});
+  await page.locator('.transport .play').click();
+
   // Playback.
   await page.getByRole('button', {name: 'Play', exact: true}).click();
   await settle(900);

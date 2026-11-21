@@ -79,7 +79,7 @@ None of this sandbox tooling is needed on a normal dev machine: use `hutch` / `b
 | `src/runtime/` | `compile.ts` (Civet → JS in the browser), `engine.ts` (Canvas Commons `Player` + `Stage` wrapper, timeline, outline, picking), `dialect.ts` (variant conversions), `python.ts` (Manim Python → Civet) |
 | `src/editor/` | The editor UI, Solid 2. `state.ts` is the single state object; `settings.ts` defines the Lab flags |
 | `shell/`, `electrobun.config.ts` | Electrobun desktop shell around the Vite build (`docs/desktop-shell.md`) |
-| `examples/<slug>/` | Bundled scenes: `scene.civet`, optional `manim.py` (the Python original), `meta.json` |
+| `examples/<slug>/` | Bundled scenes: `scene.civet`, `meta.json` (`style`: `manim` or `canvas-commons`), and the source it was ported from: `manim.py` for Manim examples, `original.tsx` for native ones (`cc-*`) |
 | `harness.html`, `src/harness.ts` | Editor-less page exposing `window.harness` for headless rendering |
 | `tests/` | `bun test` unit tests for the DOM-free modules |
 
@@ -99,6 +99,11 @@ bun run shell:dev        # desktop app (sandbox: see quirks above)
 - **The Manim layer wraps, it does not fork.** A Manim `Scene` subclass becomes an ordinary `makeScene2D` generator scene; each leaf mobject owns one Canvas Commons node (`MobNode`) that paints it. Seeking re-runs the scene from the start, as Canvas Commons always does, so mobjects must be created inside `construct`.
 - **Never mutate a mobject's `points` array in place.** Replace it. The `Path2D` cache keys on array identity.
 - **Dialect sugar lives in `compile.ts`'s pre-pass**: `from manim import *` (enables the prelude), implicit `yield*` before `@play`/`@wait` and before helper methods that animate, `self.` → `@`, `# comments` (Civet `coffeeComment`, which disables `#` length shorthand and `#private` in scenes).
+- **Two authoring styles are first-class and must stay at parity**: Manim style (`from manim import *`, a `Scene` class) and Canvas Commons style (`export default makeScene2D ...`, in Civet or TSX). When adding an editor feature, make it work for both or say why not. The mechanisms that give native scenes parity:
+  - `instrumentSteps` in `compile.ts` wraps each `yield*` statement of the `makeScene2D` callback (and non-`this` `yield*` statements in Manim scene methods) in `__step(line, kind, name, …)`, which records timeline steps. `__step`, `__stepsBegin`, `__stepsDone` come from `Engine.runtimeScope`.
+  - `engine.ts` outline/inspect/bounds/pick handle both mobjects (numeric ids) and native nodes (string keys, read inside `startScene`/`endScene`). World space for nodes has its origin at the top-left of the frame.
+  - `language: 'tsx'` in `CompileOptions` skips Civet and all dialect sugar. An example's `original.tsx` is what TSX mode opens, and `tools/e2e.cjs` renders it too.
+  - Mobject classes accept JSX calls (`fromJsx` in `src/manim/util.ts`).
 - **Every user-facing design choice still under evaluation is a Lab flag** in `src/editor/settings.ts`. Add a flag rather than hard-coding a new variant.
 
 - **Main editor UI** (timeline, inspector, scene tree, code panes, preview) is **Solid 2 in an Electrobun webview** (`BrowserWindow` / `BrowserView`).

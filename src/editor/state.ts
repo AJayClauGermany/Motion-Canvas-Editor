@@ -7,8 +7,8 @@ import {createContext, createMemo, createSignal, createStore, reconcile, useCont
 import {compileScene, CompileResult, Diagnostic} from '../runtime/compile';
 import {pythonToCivet} from '../runtime/python';
 import {toAt, toCamelCase, toExplicitYield, toImplicitYield, toSelf, toSnakeCase} from '../runtime/dialect';
-import {Engine, MobjectInfo, OutlineNode, SceneEntry, Timeline} from '../runtime/engine';
-import {BLANK_MANIM, Example, examples} from './examples';
+import {Engine, InspectInfo, ItemId, OutlineNode, SceneEntry, Timeline} from '../runtime/engine';
+import {BLANK_MANIM, BLANK_NATIVE, BLANK_NATIVE_TSX, Example, examples} from './examples';
 import {defaults, hashParam, loadSettings, qualityOf, saveSettings, Settings} from './settings';
 
 type Dialect = Pick<Settings, 'naming' | 'yieldStyle' | 'selfStyle'>;
@@ -30,22 +30,26 @@ export function convertDialect(code: string, from: Dialect, to: Dialect): string
 
 const dialectOf = (s: Settings): Dialect => ({naming: s.naming, yieldStyle: s.yieldStyle, selfStyle: s.selfStyle});
 
+export type Language = 'civet' | 'tsx';
+
 interface StoredBuffer extends Dialect {
   code: string;
 }
-const bufferKey = (slug: string) => `mce.buffer.v1.${slug}`;
-function readBuffer(slug: string): StoredBuffer | null {
+/** Civet and TSX versions of a document are separate buffers. */
+const bufferKey = (slug: string, language: Language = 'civet') =>
+  `mce.buffer.v1.${slug}${language === 'tsx' ? '.tsx' : ''}`;
+function readBuffer(slug: string, language: Language = 'civet'): StoredBuffer | null {
   try {
-    const raw = localStorage.getItem(bufferKey(slug));
+    const raw = localStorage.getItem(bufferKey(slug, language));
     return raw ? (JSON.parse(raw) as StoredBuffer) : null;
   } catch {
     return null;
   }
 }
-function writeBuffer(slug: string, buffer: StoredBuffer | null) {
+function writeBuffer(slug: string, buffer: StoredBuffer | null, language: Language = 'civet') {
   try {
-    if (buffer) localStorage.setItem(bufferKey(slug), JSON.stringify(buffer));
-    else localStorage.removeItem(bufferKey(slug));
+    if (buffer) localStorage.setItem(bufferKey(slug, language), JSON.stringify(buffer));
+    else localStorage.removeItem(bufferKey(slug, language));
   } catch {
     // Storage may be unavailable; edits then live for the session only.
   }
@@ -60,9 +64,23 @@ const SCRATCH: Example = {
   code: BLANK_MANIM,
 };
 
+const SCRATCH_NATIVE: Example = {
+  slug: 'scratch-native',
+  title: 'Blank scene',
+  description: 'An empty Canvas Commons-style scene to start from.',
+  style: 'canvas-commons',
+  order: 0,
+  code: BLANK_NATIVE,
+  tsx: BLANK_NATIVE_TSX,
+};
+
+/** Which language a document is edited in, given the Lab choice. */
+export const languageOf = (example: Example, s: Settings): Language =>
+  example.style === 'canvas-commons' && s.nativeLanguage === 'tsx' && example.tsx !== undefined ? 'tsx' : 'civet';
+
 export function createEditorState() {
   const engine = new Engine();
-  const all = [...examples, SCRATCH];
+  const all = [...examples, SCRATCH, SCRATCH_NATIVE];
   const initialSettings = loadSettings();
   const [settings, setSettings] = createStore<Settings>(initialSettings);
 
@@ -71,12 +89,21 @@ export function createEditorState() {
     return all.find(e => e.slug === wanted)?.slug ?? all[0].slug;
   })();
   const pristine = (example: Example, s: Settings) =>
-    example.style === 'manim' ? convertDialect(example.code, CANONICAL, dialectOf(s)) : example.code;
+    languageOf(example, s) === 'tsx'
+      ? example.tsx!
+      : example.style === 'manim'
+        ? convertDialect(example.code, CANONICAL, dialectOf(s))
+        : example.code;
   const bufferFor = (example: Example, s: Settings): string => {
-    const stored = readBuffer(example.slug);
+    const language = languageOf(example, s);
+    const stored = readBuffer(example.slug, language);
     if (!stored) return pristine(example, s);
     return example.style === 'manim' ? convertDialect(stored.code, stored, dialectOf(s)) : stored.code;
   };
+  /** Save (or clear) the current document's edits. */
+  const store = (example: Example, s: Settings, code: string | null) =>
+    writeBuffer(example.slug, code === null ? null : {code, ...dialectOf(s)}, languageOf(example, s));
+  const hasEdits = (example: Example, s: Settings) => readBuffer(example.slug, languageOf(example, s)) !== null;
 
   const initialSource = bufferFor(all.find(e => e.slug === initialSlug)!, initialSettings);
   // Apply the persisted preview quality before the first run.
@@ -99,16 +126,16 @@ export function createEditorState() {
   const [speed, setSpeedSignal] = createSignal(1);
   const [scenes, setScenes] = createSignal<SceneEntry[]>([]);
   const [activeScene, setActiveScene] = createSignal<string | null>(null);
-  const [selected, setSelected] = createSignal<number | null>(null);
+  const [selected, setSelected] = createSignal<ItemId | null>(null);
   const [outline, setOutline] = createStore<{nodes: OutlineNode[]}>({nodes: []});
-  const [info, setInfo] = createSignal<MobjectInfo | null>(null);
+  const [info, setInfo] = createSignal<InspectInfo | null>(null);
   const [selectionBounds, setSelectionBounds] = createSignal<[number, number, number, number] | null>(null);
   const [compileMs, setCompileMs] = createSignal<number | null>(null);
   const [reveal, setReveal] = createSignal<{line: number; tick: number} | null>(null);
   const [cursorLine, setCursorLineSignal] = createSignal(1);
   const [labOpen, setLabOpen] = createSignal(hashParam('lab') === '1');
   const [notes, setNotes] = createSignal('');
-  const [dirty, setDirty] = createSignal(readBuffer(initialSlug) !== null);
+  const [dirty, setDirty] = createSignal(hasEdits(all.find(e => e.slug === initialSlug)!, initialSettings));
   const [exporting, setExporting] = createSignal<number | null>(null);
   const [status, setStatus] = createSignal<'idle' | 'running' | 'ok' | 'error'>('idle');
   const [importOpen, setImportOpen] = createSignal(false);
@@ -121,12 +148,18 @@ export function createEditorState() {
     slug: initialSlug,
     settings: {...initialSettings} as Settings,
     timeline: null as Timeline | null,
-    selected: null as number | null,
+    selected: null as ItemId | null,
     fps: engine.fps,
     scene: null as string | null,
   };
 
   const example = createMemo(() => all.find(e => e.slug === exampleSlug()) ?? all[0]);
+  /** Language of the open document (`civet`, or `tsx` for native scenes when chosen). */
+  const language = createMemo<Language>(() => languageOf(example(), settings as Settings));
+  /** Whether the open document uses the Manim vocabulary or Canvas Commons' own. */
+  const vocabulary = createMemo<'manim' | 'native'>(() =>
+    /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(source()) ? 'manim' : 'native',
+  );
   const time = createMemo(() => frame() / fps());
   const durationSeconds = createMemo(() => duration() / fps());
   const currentSegment = createMemo(() => {
@@ -198,6 +231,7 @@ export function createEditorState() {
       implicitYield: s.yieldStyle === 'implicit',
       operators: s.operators === 'on',
       hashComments: true,
+      language: languageOf(all.find(e => e.slug === current.slug)!, s),
     });
     setCompiled(result);
     const ok = await engine.load(result, current.scene);
@@ -210,10 +244,6 @@ export function createEditorState() {
       setStatus('error');
       if (!result.ok) setDiagnostics(result.diagnostics);
       return;
-    }
-    if (engine.scenes.find(e => e.name === engine.activeScene)?.kind !== 'manim') {
-      current.timeline = null;
-      setTimeline(null);
     }
     setStatus('ok');
   };
@@ -244,20 +274,20 @@ export function createEditorState() {
       const ex = all.find(e => e.slug === current.slug)!;
       const changed = code !== pristine(ex, current.settings);
       setDirty(changed);
-      writeBuffer(current.slug, changed ? {code, ...dialectOf(current.settings)} : null);
+      store(ex, current.settings, changed ? code : null);
       scheduleRun();
     },
     run,
     loadExample(slug: string, autoplay = true) {
       const ex = all.find(e => e.slug === slug);
       if (!ex) return;
-      if (slug !== SCRATCH.slug) setFileName(null);
+      if (slug !== SCRATCH.slug && slug !== SCRATCH_NATIVE.slug) setFileName(null);
       current.slug = slug;
       current.scene = null;
       current.selected = null;
       setSelected(null);
       setExampleSlug(slug);
-      setDirty(readBuffer(slug) !== null);
+      setDirty(hasEdits(ex, current.settings));
       replaceSource(bufferFor(ex, current.settings));
       persist();
       engine.togglePlayback(false);
@@ -266,11 +296,23 @@ export function createEditorState() {
         if (autoplay) engine.togglePlayback(true);
       });
     },
-    /** Put arbitrary Manim-dialect source into the scratch document. */
+    /**
+     * Open source text as a scratch document. Manim-style text (it has the
+     * `from manim import *` line) goes to the Manim scratch; anything else is a
+     * native scene, in TSX when the file says so.
+     */
     openScratch(code: string, name: string | null = null) {
-      writeBuffer(SCRATCH.slug, {code, ...CANONICAL});
+      const isTsx = !!name && /\.(tsx?|jsx?)$/i.test(name);
+      const isManim = !isTsx && /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code);
+      if (isManim) {
+        writeBuffer(SCRATCH.slug, {code, ...CANONICAL});
+      } else {
+        const language: Language = isTsx ? 'tsx' : 'civet';
+        if (current.settings.nativeLanguage !== language) actions.setFlag('nativeLanguage', language);
+        writeBuffer(SCRATCH_NATIVE.slug, {code, ...CANONICAL}, language);
+      }
       setFileName(name);
-      actions.loadExample(SCRATCH.slug, true);
+      actions.loadExample(isManim ? SCRATCH.slug : SCRATCH_NATIVE.slug, true);
     },
     /** Convert pasted Manim Python and open the result. */
     importPython(python: string) {
@@ -287,12 +329,13 @@ export function createEditorState() {
       else actions.openScratch(text, file.name);
     },
     saveFile() {
-      const name = fileName() ?? `${current.slug}.civet`;
+      const ex = all.find(e => e.slug === current.slug)!;
+      const name = fileName() ?? `${current.slug}.${languageOf(ex, current.settings)}`;
       download(new Blob([current.source], {type: 'text/plain'}), name);
     },
     resetExample() {
       const ex = all.find(e => e.slug === current.slug)!;
-      writeBuffer(current.slug, null);
+      store(ex, current.settings, null);
       setDirty(false);
       replaceSource(pristine(ex, current.settings));
       void run();
@@ -313,9 +356,17 @@ export function createEditorState() {
           replaceSource(converted);
           const changed = converted !== pristine(ex, after);
           setDirty(changed);
-          writeBuffer(current.slug, changed ? {code: converted, ...dialectOf(after)} : null);
+          store(ex, after, changed ? converted : null);
         }
         void run();
+      } else if (key === 'nativeLanguage') {
+        // The Civet and TSX versions of a native scene are separate documents.
+        const ex = all.find(e => e.slug === current.slug)!;
+        if (ex.style === 'canvas-commons') {
+          setDirty(hasEdits(ex, after));
+          replaceSource(bufferFor(ex, after));
+          void run();
+        }
       } else if (key === 'operators') {
         void run();
       } else if (key === 'quality') {
@@ -373,7 +424,7 @@ export function createEditorState() {
       const index = t.segments.findIndex(s => s.line === line);
       if (index >= 0) actions.goToSegment(index, false);
     },
-    select(id: number | null) {
+    select(id: ItemId | null) {
       current.selected = id;
       setSelected(id);
       refreshInspection();
@@ -407,6 +458,8 @@ export function createEditorState() {
     examples: all,
     settings,
     example,
+    language,
+    vocabulary,
     exampleSlug,
     source,
     sourceVersion,

@@ -85,11 +85,11 @@ function TopBar() {
       <button onClick={() => ed.setImportOpen(true)} title="Paste a Manim (Python) scene and convert it to Civet">
         Import Python
       </button>
-      <label class="button" title="Open a .civet scene (or a Manim .py file to convert)">
+      <label class="button" title="Open a .civet or .tsx scene (or a Manim .py file to convert)">
         Open
         <input
           type="file"
-          accept=".civet,.py,.txt"
+          accept=".civet,.tsx,.ts,.py,.txt"
           onChange={e => {
             const file = e.currentTarget.files?.[0];
             if (file) void ed.openFile(file);

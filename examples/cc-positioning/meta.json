@@ -1,0 +1,7 @@
+{
+  "title": "Positioning",
+  "description": "A group with its own grid and axes is moved, rotated and scaled to show how a node's local space follows its transform.",
+  "style": "canvas-commons",
+  "source": "https://canvascommons.io/docs/positioning",
+  "order": 930
+}

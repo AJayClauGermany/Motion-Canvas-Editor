@@ -23,7 +23,17 @@ function useLabels() {
     const raw = seg.line ? lines()[seg.line - 1] : undefined;
     if (!raw) return seg.label;
     const head = /^(?:yield\*\s+)?(?:@|self\.|this\.)(play|wait|pause)\b\s*(\()?/.exec(raw.trim());
-    if (!head) return seg.label;
+    if (!head) {
+      // A native step: show the statement itself, minus `yield*` and comments.
+      const text = raw
+        .trim()
+        .replace(/^yield\*\s*/, '')
+        .replace(/\s+(#|\/\/)\s.*$/, '')
+        .replace(/;$/, '')
+        .replace(/[(,]$/, ' …')
+        .trim();
+      return text || seg.label;
+    }
     let rest = raw
       .trim()
       .slice(head[0].length)

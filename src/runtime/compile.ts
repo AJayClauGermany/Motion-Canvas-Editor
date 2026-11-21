@@ -20,6 +20,11 @@ export interface CompileOptions {
   operators: boolean;
   /** Python-style `# comments` (Civet's `coffeeComment`). */
   hashComments: boolean;
+  /**
+   * Source language. `tsx` skips Civet and the dialect pre-pass entirely, so
+   * a Motion Canvas / Canvas Commons scene runs exactly as written.
+   */
+  language?: 'civet' | 'tsx';
 }
 
 export interface Diagnostic {
@@ -189,6 +194,125 @@ function topLevelClasses(ts: string): string[] {
   return names;
 }
 
+const STEP_SKIP = new Set(['play', 'wait', 'pause']);
+
+/**
+ * Sucrase calls imported functions as `_mod.fn.call(void 0, ...args)`.
+ * Returns the real callee and arguments of a call either way.
+ */
+function unwrapCall(node: any): {callee: any; args: any[]} {
+  const callee = node.callee;
+  const viaCall =
+    callee.type === 'MemberExpression' &&
+    !callee.computed &&
+    callee.property.name === 'call' &&
+    node.arguments[0]?.type === 'UnaryExpression' &&
+    node.arguments[0].operator === 'void';
+  return viaCall ? {callee: callee.object, args: node.arguments.slice(1)} : {callee, args: node.arguments};
+}
+
+/** A short name for what a `yield*` statement runs: `all`, `position.x`, `waitFor`. */
+function describeCall(node: any): string {
+  let n = node;
+  if (n.type === 'CallExpression') n = unwrapCall(n).callee;
+  const parts: string[] = [];
+  while (n) {
+    if (n.type === 'MemberExpression') {
+      if (!n.computed && n.property.type === 'Identifier') parts.unshift(n.property.name);
+      n = n.object;
+    } else if (n.type === 'CallExpression') {
+      // `ref().opacity(...)`: the ref call itself says nothing.
+      if (n.callee.type === 'Identifier' || n.callee.type === 'ThisExpression') break;
+      n = n.callee;
+    } else if (n.type === 'Identifier') {
+      if (parts.length === 0) parts.unshift(n.name);
+      break;
+    } else break;
+  }
+  return parts.slice(-2).join('.') || 'step';
+}
+
+/**
+ * Record a timeline step for every `yield*` statement of a scene, so native
+ * Canvas Commons scenes get the same step-by-step timeline as `play` calls.
+ *
+ * `yield* X` becomes `yield* __step(line, kind, name, X)` in the generator
+ * passed to `makeScene2D` and in generator methods of classes (where calls on
+ * `this`, such as `this.play`, already record themselves). Keeps lines intact.
+ */
+export function instrumentSteps(js: string, lineMap: number[]): string {
+  let ast: any;
+  try {
+    ast = parse(js, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+      allowReturnOutsideFunction: true,
+      locations: true,
+    });
+  } catch {
+    return js;
+  }
+  const s = new MagicString(js);
+  let touched = false;
+
+  const instrumentBody = (fn: any, isMethod: boolean) => {
+    const visit = (node: any) => {
+      if (!node || typeof node.type !== 'string') return;
+      // Nested functions are their own timeline-less helpers.
+      if (/Function(Expression|Declaration)$/.test(node.type) || node.type === 'ArrowFunctionExpression' || node.type === 'ClassBody') return;
+      if (node.type === 'ExpressionStatement' && node.expression.type === 'YieldExpression' && node.expression.delegate) {
+        const arg = node.expression.argument;
+        const onThis =
+          arg.type === 'CallExpression' &&
+          arg.callee.type === 'MemberExpression' &&
+          arg.callee.object.type === 'ThisExpression';
+        if (!(isMethod && onThis)) {
+          const name = describeCall(arg);
+          const kind = /^(waitFor|waitUntil|delay)$/.test(name) ? 'wait' : 'play';
+          const line = lineMap[node.loc.start.line - 1] ?? node.loc.start.line;
+          s.prependLeft(arg.start, `__step(${line},${JSON.stringify(kind)},${JSON.stringify(name)},`);
+          s.appendRight(arg.end, ')');
+          touched = true;
+        }
+        return;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === 'type' || key === 'start' || key === 'end' || key === 'loc') continue;
+        const child = node[key];
+        if (Array.isArray(child)) child.forEach(visit);
+        else if (child && typeof child.type === 'string') visit(child);
+      }
+    };
+    fn.body.body.forEach(visit);
+  };
+
+  const walk = (node: any) => {
+    if (!node || typeof node.type !== 'string') return;
+    if (node.type === 'CallExpression') {
+      const {callee, args} = unwrapCall(node);
+      const name =
+        callee.type === 'Identifier' ? callee.name : callee.type === 'MemberExpression' && !callee.computed ? callee.property.name : '';
+      const fn = args[0];
+      if (name === 'makeScene2D' && fn?.type === 'FunctionExpression' && fn.generator) {
+        instrumentBody(fn, false);
+        s.appendRight(fn.body.start + 1, '__stepsBegin();');
+        s.appendLeft(fn.body.end - 1, ';__stepsDone();');
+        touched = true;
+      }
+    } else if (node.type === 'MethodDefinition' && node.value.generator && !STEP_SKIP.has(node.key?.name)) {
+      instrumentBody(node.value, true);
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc') continue;
+      const child = node[key];
+      if (Array.isArray(child)) child.forEach(walk);
+      else if (child && typeof child.type === 'string') walk(child);
+    }
+  };
+  walk(ast);
+  return touched ? s.toString() : js;
+}
+
 export function compileScene(source: string, options: CompileOptions = defaultCompileOptions): CompileResult {
   const result: CompileResult = {
     ok: false,
@@ -201,12 +325,16 @@ export function compileScene(source: string, options: CompileOptions = defaultCo
     diagnostics: [],
   };
 
-  const {code: expanded, prelude} = expandDialect(source, options);
+  const tsxMode = options.language === 'tsx';
+  const {code: expanded, prelude} = tsxMode ? {code: source, prelude: false} : expandDialect(source, options);
   result.expanded = expanded;
   result.prelude = prelude;
 
   let ts: string;
-  try {
+  if (tsxMode) {
+    ts = source;
+    result.lineMap = source.split('\n').map((_line, i) => i + 1);
+  } else try {
     const out = civetCompile(expanded, {
       sync: true,
       sourceMap: true,
@@ -245,7 +373,9 @@ export function compileScene(source: string, options: CompileOptions = defaultCo
       jsxImportSource: '@canvas-commons/2d',
       production: true,
     }).code;
-    if (options.operators) js = overloadOperators(js);
+    js = instrumentSteps(js, result.lineMap);
+    // Plain TSX keeps plain JavaScript arithmetic.
+    if (options.operators && !tsxMode) js = overloadOperators(js);
     if (result.classNames.length) {
       js += `\n;exports.__classes = {${result.classNames.join(', ')}};`;
     }
@@ -253,10 +383,14 @@ export function compileScene(source: string, options: CompileOptions = defaultCo
     result.ok = true;
   } catch (e: any) {
     const jsLine = e?.loc?.line;
+    const sourceLine = jsLine ? result.lineMap[jsLine - 1] : undefined;
+    const decorator = sourceLine !== undefined && /^\s*@\w/.test(ts.split('\n')[jsLine - 1] ?? '');
     result.diagnostics.push({
       stage: 'transform',
-      message: String(e?.message ?? e),
-      line: jsLine ? result.lineMap[jsLine - 1] : undefined,
+      message: decorator
+        ? 'Decorators (such as @signal() on custom components) are not supported by the in-browser compiler yet.'
+        : String(e?.message ?? e),
+      line: sourceLine,
     });
   }
   return result;

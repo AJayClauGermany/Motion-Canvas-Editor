@@ -26,7 +26,7 @@ export function examplesPlugin(dir: string): Plugin {
         const base = path.join(dir, slug);
         const code = read(path.join(base, 'scene.civet'));
         if (code === undefined) continue;
-        for (const f of ['scene.civet', 'manim.py', 'meta.json']) {
+        for (const f of ['scene.civet', 'manim.py', 'original.tsx', 'meta.json']) {
           if (fs.existsSync(path.join(base, f))) this.addWatchFile(path.join(base, f));
         }
         let meta: Record<string, unknown> = {};
@@ -35,7 +35,7 @@ export function examplesPlugin(dir: string): Plugin {
         } catch (e) {
           this.warn(`examples/${slug}/meta.json: ${(e as Error).message}`);
         }
-        list.push({slug, code, python: read(path.join(base, 'manim.py')), meta});
+        list.push({slug, code, python: read(path.join(base, 'manim.py')), tsx: read(path.join(base, 'original.tsx')), meta});
       }
       return `export default ${JSON.stringify(list)};`;
     },

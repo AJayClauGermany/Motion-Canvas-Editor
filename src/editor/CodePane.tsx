@@ -12,15 +12,21 @@ function SourceEditor() {
   onSettled(() => {
     editor = createCodeEditor(host, {
       doc: ed.getSource(),
-      language: 'civet',
+      language: ed.language() === 'tsx' ? 'ts' : 'civet',
       onChange: ed.edit,
       onCursorLine: ed.setCursorLine,
       onRun: () => void ed.run(),
       naming: () => ed.settings.naming,
+      vocabulary: () => ed.vocabulary(),
     });
     return () => editor?.destroy();
   });
 
+  createEffect(
+    () => ed.language(),
+    language => editor?.setLanguage(language === 'tsx' ? 'ts' : 'civet'),
+    {defer: true},
+  );
   // The buffer was replaced from outside (example switch, dialect conversion).
   createEffect(
     () => ed.sourceVersion(),
@@ -46,7 +52,7 @@ function SourceEditor() {
 }
 
 /** Read-only viewer for the Python original or the compiled TypeScript. */
-function ReferenceViewer(props: {doc: string; language: 'python' | 'ts'}) {
+function ReferenceViewer(props: {doc: string; language: 'python' | 'ts' | 'civet'}) {
   let host!: HTMLDivElement;
   let editor: CodeEditor | undefined;
   onSettled(() => {
@@ -57,27 +63,47 @@ function ReferenceViewer(props: {doc: string; language: 'python' | 'ts'}) {
     () => props.doc,
     doc => editor?.setDoc(doc),
   );
+  createEffect(
+    () => props.language,
+    language => editor?.setLanguage(language),
+    {defer: true},
+  );
   return <div class="code-host" ref={el => (host = el)} />;
 }
 
 export function CodePane() {
   const ed = useEditor();
-  const fileName = createMemo(() => `${ed.exampleSlug()}.civet`);
+  const fileName = createMemo(() => ed.fileName() ?? `${ed.exampleSlug()}.${ed.language()}`);
+  /** What "the original" is for this document: Python, TSX, or the Civet port. */
+  const original = createMemo(() => {
+    const ex = ed.example();
+    if (ex.style === 'manim') {
+      return ex.python === undefined ? null : {short: 'Python', title: 'Manim (Python) original', language: 'python' as const, doc: ex.python};
+    }
+    if (ed.language() === 'tsx') {
+      return {short: 'Civet', title: 'The same scene in Civet', language: 'civet' as const, doc: ex.code};
+    }
+    return ex.tsx === undefined ? null : {short: 'TSX', title: 'Canvas Commons (TSX) original', language: 'ts' as const, doc: ex.tsx};
+  });
   const reference = createMemo(() => {
     const mode = ed.settings.compare;
     if (mode === 'python') {
-      const py = ed.example().python;
-      return {
-        title: 'Manim (Python) original',
-        language: 'python' as const,
-        doc: py ?? '# No Python original for this example.\n# Pick one of the Manim gallery examples to compare.',
-      };
+      return (
+        original() ?? {
+          title: 'Original',
+          language: 'python' as const,
+          doc: '# This scene has no original to compare with.\n# Pick one of the bundled examples.',
+        }
+      );
     }
     if (mode === 'compiled') {
       return {
-        title: 'Compiled TypeScript',
+        title: ed.language() === 'tsx' ? 'Compiled JavaScript' : 'Compiled TypeScript',
         language: 'ts' as const,
-        doc: ed.compiled()?.ts || '// Compile errors: fix them to see the output.',
+        doc:
+          ed.language() === 'tsx'
+            ? ed.compiled()?.js || '// Compile errors: fix them to see the output.'
+            : ed.compiled()?.ts || '// Compile errors: fix them to see the output.',
       };
     }
     return null;
@@ -108,9 +134,9 @@ export function CodePane() {
               <button
                 class={{on: ed.settings.compare === mode}}
                 onClick={() => ed.setFlag('compare', mode)}
-                title={mode === 'none' ? 'Source only' : mode === 'python' ? 'Compare with the Manim Python original' : 'Show the compiled TypeScript'}
+                title={mode === 'none' ? 'Source only' : mode === 'python' ? 'Compare with the source this was ported from' : 'Show the compiled output'}
               >
-                {mode === 'none' ? 'Source' : mode === 'python' ? '+ Python' : '+ Compiled'}
+                {mode === 'none' ? 'Source' : mode === 'python' ? `+ ${original()?.short ?? 'Original'}` : '+ Compiled'}
               </button>
             )}
           </For>
