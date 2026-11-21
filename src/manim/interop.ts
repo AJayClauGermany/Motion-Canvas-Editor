@@ -78,13 +78,13 @@ export function registerRoot(view: View2D, root: Node): void {
  */
 function ensureRenderSync(view: View2D): void {
   if (renderSynced.has(view)) return;
-  renderSynced.add(view);
   let scene: any;
   try {
     scene = useScene();
   } catch {
     return;
   }
+  renderSynced.add(view);
   scene.lifecycleEvents?.onBeforeRender.subscribe(() => {
     if (scene.getView?.() !== view) return;
     const manim = scene.manim;
