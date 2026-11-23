@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "motion-canvas": {
+      "command": "bun",
+      "args": ["src/mcp/main.ts"]
+    }
+  }
+}

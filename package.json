@@ -13,6 +13,8 @@
     "test": "bun test",
     "test:e2e": "node tools/e2e.cjs",
     "test:ui": "node tools/ui-smoke.cjs",
+    "mcp": "bun src/mcp/main.ts",
+    "mcp:http": "bun src/mcp/main.ts --http",
     "shell:dev": "bun run build && electrobun dev",
     "shell:run": "electrobun run --env=dev",
     "shell:build": "bun run build && electrobun build --env=stable",
@@ -31,6 +33,7 @@
     "@codemirror/view": "^6.43.15",
     "@danielx/civet": "0.11.17",
     "@lezer/highlight": "^1.2.5",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@solidjs/web": "2.0.3",
     "acorn": "^8.19.0",
     "chroma-js": "^3.3.0",
@@ -38,7 +41,8 @@
     "magic-string": "^1.4.5",
     "mathjax-full": "3.2.2",
     "solid-js": "2.0.3",
-    "sucrase": "^3.35.1"
+    "sucrase": "^3.35.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@babel/core": "^8.1.3",

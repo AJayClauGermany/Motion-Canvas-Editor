@@ -33,6 +33,7 @@ export interface Settings {
   grid: 'off' | 'on';
   theme: 'midnight' | 'slate' | 'paper';
   quality: 'draft' | 'standard' | 'high';
+  agentEdits: 'apply' | 'review';
 }
 
 export const defaults: Settings = {
@@ -50,6 +51,7 @@ export const defaults: Settings = {
   grid: 'off',
   theme: 'midnight',
   quality: 'standard',
+  agentEdits: 'apply',
 };
 
 export const flags: Flag[] = [
@@ -159,6 +161,16 @@ export const flags: Flag[] = [
     options: [
       {value: 'on', label: 'On', hint: 'The line of the step under the playhead is highlighted.'},
       {value: 'off', label: 'Off', hint: 'No highlight.'},
+    ],
+  },
+  {
+    key: 'agentEdits',
+    group: 'Editor',
+    title: 'Agent edits',
+    question: 'When a connected AI agent changes the scene, should it land at once or wait for you?',
+    options: [
+      {value: 'apply', label: 'Apply', hint: 'Changes land and run immediately, with a note saying what changed. Ctrl/Cmd+Z undoes them.'},
+      {value: 'review', label: 'Ask first', hint: 'Each change is shown as a diff to accept or reject; the agent is told which.'},
     ],
   },
   {

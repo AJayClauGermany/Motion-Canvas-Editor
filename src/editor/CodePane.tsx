@@ -1,4 +1,5 @@
 import {createEffect, createMemo, For, onSettled, Show} from 'solid-js';
+import {AgentProposalBanner} from './AgentPanel';
 import {CodeEditor, createCodeEditor} from './codemirror';
 import {Splitter} from './Splitter';
 import {useEditor} from './state';
@@ -147,6 +148,7 @@ export function CodePane() {
           <For each={ed.notice()}>{note => <li>{note}</li>}</For>
         </ul>
       </Show>
+      <AgentProposalBanner />
       <div class="code-split">
         <SourceEditor />
         <Show when={reference()}>

@@ -78,6 +78,8 @@ None of this sandbox tooling is needed on a normal dev machine: use `hutch` / `b
 | `src/manim/` | The Manim-style layer on Canvas Commons (TypeScript): `mobject.ts` (Mobject/VMobject on Manim-style Bézier points, units, y up), `geometry.ts`, `text.ts`, `tex.ts`, `animation.ts`, `graphing.ts`, `scene.ts`, `interop.ts` (native nodes as mobjects and the reverse). `index.ts` builds `api`, the flat namespace a scene gets from `from manim import *` |
 | `src/runtime/` | `compile.ts` (Civet or TSX → JS in the browser, timeline step instrumentation), `decorators.ts` (legacy decorators lowered before sucrase), `engine.ts` (Canvas Commons `Player` + `Stage` wrapper, timeline, outline, picking), `dialect.ts` (Manim dialect variants), `convert.ts` (Civet ⇄ TSX), `python.ts` (Manim Python → Civet) |
 | `src/editor/` | The editor UI, Solid 2. `state.ts` is the single state object; `settings.ts` defines the Lab flags |
+| `src/mcp/` | MCP server for outside AI agents (`docs/agents.md`): `server.ts` tools/prompts/resources, `hub.ts` the 127.0.0.1 HTTP server the editor page connects to, `protocol.ts` shared message types. `src/editor/agent.ts` is the page's side |
+| `docs/agents/` | Docs the MCP server serves to agents (`read_docs`), imported as text. Every complete scene in them must compile with no hints (`tests/agent.test.ts`) |
 | `shell/`, `electrobun.config.ts` | Electrobun desktop shell around the Vite build (`docs/desktop-shell.md`) |
 | `examples/<slug>/` | Bundled scenes: `scene.civet`, `meta.json` (`style`: `manim` or `canvas-commons`), and the source it was ported from: `manim.py` for Manim examples, `original.tsx` for native ones (`cc-*`) |
 | `harness.html`, `src/harness.ts` | Editor-less page exposing `window.harness` for headless rendering |
@@ -90,6 +92,8 @@ bun run typecheck
 bun test
 node tools/e2e.cjs [slug…]   # render examples headless → artifacts/e2e/<slug>.png contact sheets; LOOK at them
 node tools/ui-smoke.cjs      # drive the editor UI headless → artifacts/ui/*.png
+node tools/agent-e2e.cjs     # MCP client → MCP server → editor in headless Chromium → artifacts/agent/*.png
+bun run mcp / bun run mcp:http   # MCP server (stdio / http://127.0.0.1:5275/mcp); bun tools/mcp-client.ts to call it by hand
 bun run shell:dev        # desktop app (sandbox: see quirks above)
 ```
 
@@ -110,6 +114,7 @@ bun run shell:dev        # desktop app (sandbox: see quirks above)
     - `MobjectHost` is a node that draws a mobject in its own local space. `Node.prototype.parseChildren` and `insert` are patched once to create it for a mobject child. `Scene.sync()` skips leaves that a host draws (`hostOf`).
     - `useManim(view)` (`scene.ts`) attaches a `Scene` without a class to a native scene. Such a scene is not `selfReporting`: `Engine.recordStep` keeps the native steps as the timeline and the scene's `play` annotates the open step instead of recording its own.
     - `Scene.play` runs generator arguments (native tweens) as child threads next to the animations.
+- **AI agents connect from outside, over MCP; there is no chat in the app.** The editor page connects to the MCP server's hub (`ws://127.0.0.1:5275/editor`) when "Agent" is on; the desktop shell runs the hub in its main process on request. Code from agents goes through `src/runtime/normalize.ts` (detects Civet/TSX/Python, converts to the document's language and dialect, repairs `x => y`, `name=value`, missing `yield*`) and `src/runtime/hints.ts` (heuristic mistakes). Runs and renders for agents use `harness.html?agent` in a hidden iframe: a separate engine with a message-channel clock, because a background tab gets no `requestAnimationFrame`. A new editor feature that agents should reach needs a method in `src/mcp/protocol.ts`, a handler in `src/editor/agent.ts` and a tool in `src/mcp/server.ts`.
 - **Every user-facing design choice still under evaluation is a Lab flag** in `src/editor/settings.ts`. Add a flag rather than hard-coding a new variant.
 
 - **Main editor UI** (timeline, inspector, scene tree, code panes, preview) is **Solid 2 in an Electrobun webview** (`BrowserWindow` / `BrowserView`).

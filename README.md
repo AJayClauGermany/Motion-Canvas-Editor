@@ -72,9 +72,26 @@ In the Claude Code cloud sandbox, run `tools/sandbox/setup.sh` first (see
 | Reference pane | The source an example was ported from (Manim Python, or Canvas Commons TSX), or the compiled output, next to your source |
 | Import Python | Paste a Manim scene in Python; a converter rewrites it to Civet and opens it |
 | Export | Current frame as PNG, or a real-time video recording (Chromium only) |
+| Agent | Connect an AI agent you already use (Claude Code, Cursor, …) over MCP: it can read, edit, check and render the scene. See below |
 
 Edits re-run after 250 ms and keep the playhead where it was. If the code does
 not compile, the preview keeps showing the last version that did.
+
+## AI agents (MCP)
+
+There is no chat inside the editor. It exposes an MCP server instead, so an
+agent in your own tools can work on the open scene: read it, edit it, check
+it, render frames, look up the API and read bundled docs.
+
+```bash
+claude mcp add motion-canvas -- bun run --cwd /path/to/Motion-Canvas-Editor mcp   # or: bun run mcp:http
+```
+
+Then switch **Agent** on in the editor's top bar. Agents may write TSX,
+Civet, a mix, or Manim Python: the tools convert it to the document's language
+and repair what would compile to something else. Edits can land at once
+(undo with Ctrl/Cmd+Z) or wait for you to accept them. Details, tools and
+security: [docs/agents.md](docs/agents.md).
 
 ## Choices to review (the Lab)
 
@@ -99,6 +116,7 @@ notes on the clipboard as Markdown.
 | Coordinate grid | off · on | off |
 | Preview quality | draft · standard · high | standard |
 | Theme | Midnight · Slate · Paper | Midnight |
+| Agent edits | apply · ask first | apply |
 
 The definitions live in [`src/editor/settings.ts`](src/editor/settings.ts);
 adding a variant is one entry there plus the code that reads it.
@@ -174,6 +192,7 @@ bun test                 # compiler, dialect, Python converter, Bézier and vect
 bun run typecheck
 node tools/e2e.cjs       # renders every example (and each TSX original) headless, contact sheets in artifacts/e2e/
 node tools/ui-smoke.cjs  # drives the editor UI headless, screenshots in artifacts/ui/
+node tools/agent-e2e.cjs # an MCP client drives the editor through the MCP server, screenshots in artifacts/agent/
 ```
 
 The last two need Playwright with Chromium. They use the dev server on port
