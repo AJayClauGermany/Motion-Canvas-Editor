@@ -186,8 +186,21 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
     setDoc(doc) {
       if (doc === view.state.doc.toString()) return;
       silent = true;
-      const head = Math.min(view.state.selection.main.head, doc.length);
-      view.dispatch({changes: {from: 0, to: view.state.doc.length, insert: doc}, selection: {anchor: head}});
+      // Replace only the part that changed, so the cursor, scroll position
+      // and undo history stay meaningful when an agent edits one line.
+      const old = view.state.doc.toString();
+      let from = 0;
+      while (from < old.length && from < doc.length && old[from] === doc[from]) from++;
+      let endOld = old.length;
+      let endNew = doc.length;
+      while (endOld > from && endNew > from && old[endOld - 1] === doc[endNew - 1]) {
+        endOld--;
+        endNew--;
+      }
+      const delta = endNew - endOld;
+      const head = view.state.selection.main.head;
+      const anchor = Math.min(head <= from ? head : head >= endOld ? head + delta : endNew, doc.length);
+      view.dispatch({changes: {from, to: endOld, insert: doc.slice(from, endNew)}, selection: {anchor}});
       silent = false;
       view.scrollDOM.scrollLeft = 0;
     },

@@ -1,4 +1,5 @@
 import {createMemo, For, onSettled, Show} from 'solid-js';
+import {AgentButton} from './AgentPanel';
 import {CodePane} from './CodePane';
 import {ImportDialog} from './ImportDialog';
 import {LabPanel} from './LabPanel';
@@ -119,6 +120,7 @@ function TopBar() {
       >
         Video
       </button>
+      <AgentButton />
       <button class={['lab-toggle', {on: ed.labOpen()}]} onClick={() => ed.setLabOpen(!ed.labOpen())}>
         ⚗ Lab
       </button>

@@ -16,5 +16,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["./**/*.ts", "../electrobun.config.ts"]
+  "include": ["./**/*.ts", "../electrobun.config.ts", "../src/mcp/text.d.ts", "../src/chroma.d.ts"]
 }

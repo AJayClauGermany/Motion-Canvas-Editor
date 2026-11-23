@@ -10,6 +10,7 @@ import {pythonToCivet} from '../runtime/python';
 import {toAt, toCamelCase, toExplicitYield, toImplicitYield, toSelf, toSnakeCase} from '../runtime/dialect';
 import {Engine, InspectInfo, ItemId, OutlineNode, SceneEntry, Timeline} from '../runtime/engine';
 import {apiNames} from '../manim';
+import {createAgentBridge} from './agent';
 import {BLANK_MANIM, BLANK_NATIVE, BLANK_NATIVE_TSX, Example, examples} from './examples';
 import {defaults, hashParam, loadSettings, qualityOf, saveSettings, Settings} from './settings';
 
@@ -338,6 +339,20 @@ export function createEditorState() {
       scheduleRun();
     },
     run,
+    /**
+     * Replace the buffer with text from outside the editor (an AI agent): an
+     * undoable change in the code pane, persisted and run like typing.
+     */
+    applyExternal(code: string, note: string) {
+      if (code === current.source) return;
+      replaceSource(code);
+      const ex = all.find(e => e.slug === current.slug)!;
+      const changed = code !== pristine(ex, current.settings);
+      setDirty(changed);
+      store(ex, current.settings, changed ? code : null, current.provenance);
+      setNotice([`Agent: ${note}. Undo with Ctrl/Cmd+Z.`]);
+      void run();
+    },
     loadExample(slug: string, autoplay = true) {
       const ex = all.find(e => e.slug === slug);
       if (!ex) return;
@@ -537,8 +552,42 @@ export function createEditorState() {
     },
   };
 
+  const agent = createAgentBridge({
+    examples: all,
+    settings: settings as Settings,
+    getSource: actions.getSource,
+    example,
+    exampleSlug,
+    language,
+    vocabulary,
+    fileName,
+    dirty,
+    status,
+    diagnostics,
+    timeline,
+    time,
+    durationSeconds,
+    scenes,
+    activeScene,
+    selected,
+    info,
+    cursorLine,
+    compileOptions: () => compileOptionsOf(current.settings),
+    adaptDialect: (code, from) => convertDialect(code, from, dialectOf(current.settings)),
+    convertForReading: (code, to) => convertLanguage(code, current.settings.language, to, current.settings),
+    applyExternal: actions.applyExternal,
+    notify: lines => setNotice(lines),
+    loadExample: actions.loadExample,
+    openScratch: (code, name, as) => actions.openScratch(code, name, as, dialectOf(current.settings)),
+    revealLine: actions.revealLine,
+    seekTime: actions.seekTime,
+    goToSegment: actions.goToSegment,
+    togglePlayback: actions.togglePlayback,
+  });
+
   return {
     engine,
+    agent,
     examples: all,
     settings,
     example,
