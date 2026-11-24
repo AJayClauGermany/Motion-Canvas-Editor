@@ -4,7 +4,8 @@
  * seeking, the timeline and rendering all come from the engine.
  */
 import {makeScene2D, Node as CCNode, View2D} from '@canvas-commons/2d';
-import {join, ThreadGenerator, tween, useScene, useThread} from '@canvas-commons/core';
+import {join, sound, ThreadGenerator, tween, useScene, useThread} from '@canvas-commons/core';
+import {resolveAsset} from '../runtime/assets';
 import {Animation, toAnimation, Wait} from './animation';
 import {config} from './constants';
 import {Rectangle} from './geometry';
@@ -234,6 +235,18 @@ export class Scene {
   }
   public pause(duration = 1): ThreadGenerator {
     return this.wait(duration);
+  }
+
+  /**
+   * `self.add_sound("click.mp3", time_offset=0.5, gain=-6)`: play a sound
+   * clip of the project from the current time. `gain` is in decibels. The
+   * engine's own `sound(...)` builder offers trimming and pitch as well.
+   */
+  public addSound(file: string, ...rest: any[]): void {
+    const o = kw(rest, ['timeOffset', 'gain'], {timeOffset: 0});
+    const clip = sound(resolveAsset(String(file)));
+    if (typeof o.gain === 'number') clip.gain(o.gain);
+    clip.play(o.timeOffset || 0);
   }
 
   /** Marks a named point on the timeline (Manim's sections). */

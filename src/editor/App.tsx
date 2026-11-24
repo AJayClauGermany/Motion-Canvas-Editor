@@ -75,6 +75,12 @@ function NewMenu() {
           <button role="menuitem" onClick={pick(() => ed.setImportOpen(true))} title="Paste a Manim (Python) scene and convert it">
             Import Manim Python…
           </button>
+          <Show when={ed.folderSupported && !ed.folder()}>
+            <hr />
+            <button role="menuitem" onClick={pick(() => void ed.chooseFolder())} title="One file per scene, plus assets and exports, in a folder you pick">
+              Save my scenes in a folder…
+            </button>
+          </Show>
           <Show when={ed.example().user}>
             <hr />
             <Show
@@ -93,6 +99,57 @@ function NewMenu() {
         </div>
       </Show>
     </div>
+  );
+}
+
+/** The project folder, once there is one: where it is, and a way to reconnect or leave it. */
+function FolderChip() {
+  const ed = useEditor();
+  const [open, setOpen] = createSignal(false);
+  let root: HTMLDivElement | undefined;
+  onSettled(() => {
+    const onDown = (e: PointerEvent) => {
+      if (root && !root.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  });
+  const pick = (fn: () => void) => () => {
+    setOpen(false);
+    fn();
+  };
+  return (
+    <Show when={ed.folder()}>
+      {folder => (
+        <div class="menu" ref={el => (root = el)}>
+          <Show
+            when={!folder().locked}
+            fallback={
+              <button class="folder-chip locked" onClick={() => void ed.reconnectFolder()} title={`The browser needs your OK to use the folder "${folder().name}" again. Until then your edits are kept in the browser.`}>
+                Reconnect {folder().name}
+              </button>
+            }
+          >
+            <button class="folder-chip" onClick={() => setOpen(!open())} aria-expanded={open() ? 'true' : 'false'} title={`Your scenes are saved as files in the folder "${folder().name}"`}>
+              <span aria-hidden="true">▤</span> {folder().name}
+            </button>
+          </Show>
+          <Show when={open()}>
+            <div class="menu-pop" role="menu">
+              <p class="menu-note">
+                Each scene is a file in <b>{folder().name}</b>; sounds are in <code>assets/</code>, exports in <code>exports/</code>. Changes made to the files outside the editor show up here.
+              </p>
+              <button role="menuitem" onClick={pick(() => void ed.chooseFolder())}>
+                Use another folder…
+              </button>
+              <button role="menuitem" onClick={pick(() => void ed.disconnectFolder())}>
+                Stop saving to this folder
+              </button>
+            </div>
+          </Show>
+        </div>
+      )}
+    </Show>
   );
 }
 
@@ -139,6 +196,7 @@ function TopBar() {
         </select>
       </label>
       <NewMenu />
+      <FolderChip />
       <Show when={ed.scenes().length > 1}>
         <label class="field">
           <span>Showing</span>

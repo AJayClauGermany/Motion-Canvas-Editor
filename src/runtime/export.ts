@@ -35,6 +35,8 @@ export interface RenderOutput {
   seconds: number;
   /** Video codec, when there is one. */
   codec?: string;
+  /** Sound in a video: how many clips were mixed in, the codec (null: no encoder), and clips that could not be loaded. */
+  audio?: {clips: number; codec: string | null; failed: string[]};
 }
 
 /** Set `cancelled` to stop a render at the next frame. */
@@ -96,6 +98,56 @@ function frameCopier(source: HTMLCanvasElement, width: number, height: number, r
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
+const decibels = (db: number) => Math.pow(10, db / 20);
+
+/**
+ * Every sound of the scene mixed into one buffer as long as the video, the
+ * way the preview plays them: trimmed, with its gain, and resampled for its
+ * playback rate (pitch follows speed). Null when the scene is silent.
+ */
+export async function mixSounds(engine: Engine, seconds: number): Promise<{buffer: AudioBuffer; clips: number; failed: string[]} | null> {
+  const sounds = engine.sounds();
+  if (!sounds.length || seconds <= 0 || typeof OfflineAudioContext === 'undefined') return null;
+  const rate = 48_000;
+  const context = new OfflineAudioContext(2, Math.ceil(seconds * rate), rate);
+  const decoded = new Map<string, Promise<AudioBuffer | null>>();
+  const load = (url: string) => {
+    let p = decoded.get(url);
+    if (!p) {
+      p = fetch(url)
+        .then(r => r.arrayBuffer())
+        .then(data => context.decodeAudioData(data))
+        .catch(() => null);
+      decoded.set(url, p);
+    }
+    return p;
+  };
+  const failed: string[] = [];
+  let clips = 0;
+  for (const s of sounds) {
+    const buffer = await load(s.audio);
+    if (!buffer) {
+      failed.push(s.audio);
+      continue;
+    }
+    const from = Math.max(0, s.start ?? 0);
+    const to = Math.min(buffer.duration, s.end ?? Infinity);
+    // A sound placed before the scene starts is cut at the start.
+    const late = Math.max(0, -s.offset) * s.realPlaybackRate;
+    if (to - from - late <= 0 || s.offset >= seconds) continue;
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.playbackRate.value = s.realPlaybackRate;
+    const gain = context.createGain();
+    gain.gain.value = decibels(s.gain ?? 0);
+    source.connect(gain).connect(context.destination);
+    source.start(Math.max(0, s.offset), from + late, to - from - late);
+    clips++;
+  }
+  if (!clips) return failed.length ? {buffer: context.createBuffer(2, 1, rate), clips: 0, failed} : null;
+  return {buffer: await context.startRendering(), clips, failed};
+}
+
 async function renderVideo(host: RenderHost, onProgress: (p: number) => void, control: RenderControl): Promise<RenderOutput> {
   if (!canEncodeFrames()) throw new ExportUnsupported('This browser cannot encode video frame by frame (no WebCodecs).');
   const mb = await import('mediabunny');
@@ -123,7 +175,23 @@ async function renderVideo(host: RenderHost, onProgress: (p: number) => void, co
   // Flat colour and sharp edges are what compression artefacts show on first.
   const source = new mb.CanvasSource(frame.canvas, {codec, quality: mb.QUALITY_VERY_HIGH, keyFrameInterval: 2});
   output.addVideoTrack(source, {frameRate: fps});
+
+  // Sound: one mixed track. AAC is what an MP4 is expected to carry; Opus where the browser has no AAC encoder.
+  const mix = await mixSounds(engine, frames / fps);
+  let audioCodec: import('mediabunny').AudioCodec | null = null;
+  let audio: InstanceType<typeof mb.AudioBufferSource> | null = null;
+  if (mix?.clips) {
+    audioCodec = await mb.getFirstEncodableAudioCodec(
+      format.getSupportedAudioCodecs().filter(c => c === 'aac' || c === 'opus'),
+      {numberOfChannels: 2, sampleRate: mix.buffer.sampleRate},
+    );
+    if (audioCodec) {
+      audio = new mb.AudioBufferSource({codec: audioCodec, bitrate: mb.QUALITY_HIGH});
+      output.addAudioTrack(audio);
+    }
+  }
   await output.start();
+  if (audio && mix) await audio.add(mix.buffer);
   try {
     for (let f = 0; f < frames; f++) {
       if (control.cancelled) throw new ExportCancelled();
@@ -147,6 +215,7 @@ async function renderVideo(host: RenderHost, onProgress: (p: number) => void, co
     frames,
     seconds: frames / fps,
     codec,
+    audio: mix ? {clips: mix.clips, codec: audioCodec, failed: mix.failed} : undefined,
   };
 }
 

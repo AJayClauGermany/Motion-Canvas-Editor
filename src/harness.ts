@@ -7,6 +7,7 @@
 import {apiNames} from './manim';
 import {compileScene, defaultCompileOptions} from './runtime/compile';
 import {civetToTsx, tsxToCivet} from './runtime/convert';
+import {setAssetUrls} from './runtime/assets';
 import {Engine, ItemId, OutlineNode, Timeline} from './runtime/engine';
 import type {RenderControl, RenderOptions} from './runtime/export';
 
@@ -284,4 +285,7 @@ const agent = {
       return {run, output};
     }),
 };
+/** The project's assets (name → URL), so scenes here find the same sound clips as in the editor. */
+(agent as any).setAssets = setAssetUrls;
+(api as any).setAssets = setAssetUrls;
 (window as any).harnessAgent = agent;

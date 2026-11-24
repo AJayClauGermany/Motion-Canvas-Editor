@@ -187,17 +187,22 @@ export function ExportDialog() {
             {j => (
               <div class="export-done" role="status">
                 <p>
-                  <b>Saved {j().file.fileName}</b> to your downloads · {formatBytes(j().file.blob.size)}
+                  <b>Saved {j().savedTo ?? j().file.fileName}</b>
+                  <Show when={!j().savedTo}> to your downloads</Show> · {formatBytes(j().file.blob.size)}
                   <Show when={j().file.width && j().file.kind !== 'embed'}>
                     {' '}
                     · {j().file.width} × {j().file.height}
                   </Show>
                   <Show when={j().file.codec === 'avc'}> · H.264</Show>
                   <Show when={j().file.extension === 'webm'}> · WebM, because this browser cannot encode MP4</Show>{' '}
+                  <Show when={(j().file.sound?.clips ?? 0) > 0 && j().file.kind === 'video'}> · with sound</Show>{' '}
                   <a class="link" href={j().url} download={j().file.fileName}>
-                    Download again
+                    {j().savedTo ? 'Download a copy' : 'Download again'}
                   </a>
                 </p>
+                <Show when={j().file.sound?.note}>
+                  <p class="muted">{j().file.sound!.note}</p>
+                </Show>
                 <Show when={j().file.realtime}>
                   <p class="muted">Recorded while playing, because this browser cannot encode frame by frame. Chrome, Edge and Safari render every frame.</p>
                 </Show>

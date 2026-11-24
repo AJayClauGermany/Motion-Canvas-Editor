@@ -20,7 +20,11 @@ function SourceEditor() {
       naming: () => ed.settings.naming,
       vocabulary: () => ed.vocabulary(),
     });
-    return () => editor?.destroy();
+    ed.attachCodeEditor(editor);
+    return () => {
+      ed.attachCodeEditor(null);
+      editor?.destroy();
+    };
   });
 
   createEffect(
@@ -141,8 +145,8 @@ export function CodePane() {
                 }
               }}
             />
-            <span class="scene-ext" title="Saved in this browser as you type">
-              .{ed.language()} · saved
+            <span class="scene-ext" title={ed.folder() && !ed.folder()!.locked ? `Saved as you type in the folder "${ed.folder()!.name}"` : 'Saved in this browser as you type'}>
+              .{ed.language()} · {ed.folder() ? (ed.folder()!.locked ? 'saved in the browser' : `saved in ${ed.folder()!.name}`) : 'saved'}
             </span>
           </Show>
           <Show when={ed.dirty()}>

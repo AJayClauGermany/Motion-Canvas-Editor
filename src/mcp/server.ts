@@ -9,7 +9,7 @@
 import {McpServer, ResourceTemplate} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {accessSync, constants, existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {homedir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {basename, join, resolve} from 'node:path';
 import {z} from 'zod';
 import {apiNames} from '../manim';
 import {compileScene, defaultCompileOptions, Diagnostic} from '../runtime/compile';
@@ -44,7 +44,7 @@ export const INSTRUCTIONS = `Motion Canvas Editor: an animation editor (Canvas C
 - Manim style: Manim's vocabulary on this engine. \`from manim import *\` (Civet) or \`import {...} from 'manim'\` (TSX), a class extending Scene with construct(), play/wait.
 - Canvas Commons style: \`export default makeScene2D(function* (view) {...})\` with JSX nodes, refs, signals; every \`yield*\` statement is a timeline step.
 
-Workflow, the same one the user follows in the editor: get_editor_state (open scene, its language, problems, timeline) → change it with edit_scene (exact old/new text, in the document's language) or write_scene (whole scene, any language), or start a new scene next to it with open_scene → read the returned problems, hints and run report → render_preview to look at frames, inspect_frame for positions. Fix until there are no problems → export_scene writes the result to a file (video by default; also gif, a web embed, an image). It needs no options.
+Workflow, the same one the user follows in the editor: get_editor_state (open scene, its language, problems, timeline) → change it with edit_scene (exact old/new text, in the document's language) or write_scene (whole scene, any language), or start a new scene next to it with open_scene → read the returned problems, hints and run report → render_preview to look at frames, inspect_frame for positions. Fix until there are no problems → export_scene writes the result to a file (video by default; also gif, a web embed, an image). It needs no options. Sound: add_sound_file brings a clip into the project, and a scene plays it by file name (\`add_sound "click.mp3"\`); it ends up in the video and the web embed.
 
 You share the document with the user, who may type at any time. Every tool that touches the open scene first tells you what changed in the editor since you last read it; take that as their current intent. edit_scene applies to their latest text. write_scene will not replace changes you have not been shown.
 
@@ -115,6 +115,8 @@ function formatExport(r: ExportReport): string {
   const facts = [what, r.width && r.height ? `${r.width} × ${r.height}` : '', r.fps && r.format !== 'image' && r.format !== 'embed' ? `${r.fps} fps` : '', r.seconds ? `${r.seconds.toFixed(2)} s` : '', r.frames && r.frames > 1 ? `${r.frames} frames` : '', kB(r.bytes)].filter(Boolean);
   const lines = [r.path ? `Exported to ${r.path}` : `Exported ${r.fileName}, but it was not saved: ${r.saveError ?? 'unknown error'}`, `${facts.join(', ')}.`];
   if (r.realtime) lines.push('Recorded while playing, because this webview cannot encode frame by frame: frames may be dropped. The browser build (Chromium) renders every frame.');
+  if (r.sound?.clips) lines.push(`Sound: ${r.sound.clips} clip${r.sound.clips === 1 ? '' : 's'}${r.sound.codec ? ` (${r.sound.codec === 'aac' ? 'AAC' : r.sound.codec})` : ''}.`);
+  if (r.sound?.note) lines.push(r.sound.note);
   if (r.snippet) lines.push('To show it on a web page, put the file next to the page and paste:', r.snippet, 'Options go in the URL hash, e.g. `scene.html#autoplay=0&loop=0&controls=0`.');
   return lines.join('\n');
 }
@@ -421,6 +423,12 @@ export function createMcpServer(link: EditorLink): McpServer {
             note,
             `Document: ${d.title} (${d.slug}; ${d.kind === 'scene' ? `one of the user's own scenes${d.fileName ? `, ${d.fileName}` : ''}` : `a bundled example${d.dirty ? ', edited by the user' : ''}`}).`,
             others.length ? `The user's other scenes (open_scene \`scene\`): ${others.slice(0, 12).map(m => `${m.title} (${m.slug})`).join(', ')}${others.length > 12 ? ', …' : ''}.` : '',
+            s.folder
+              ? s.folder.locked
+                ? `Project folder: "${s.folder.name}", but the browser is waiting for the user to reconnect it; edits are kept in the browser until then.`
+                : `Project folder: the user's scenes are files in a folder named "${s.folder.name}" (one .civet or .tsx per scene, sounds in assets/, exports in exports/). The editor writes every change there and picks up changes made to the files.`
+              : '',
+            s.sounds.length ? `Sounds (use by name: \`add_sound "name"\` in a Manim scene, \`sound("name").play()\` from @canvas-commons/core in a native one): ${s.sounds.map(a => a.name).join(', ')}.` : '',
             `Language: ${d.language}. Style: ${d.vocabulary === 'manim' ? 'Manim' : 'Canvas Commons (native)'}.${d.language === 'civet' ? ` Dialect: ${d.dialect.naming}_case names, ${d.dialect.yieldStyle} yield*, ${d.dialect.selfStyle === 'at' ? '@' : 'self.'} for the scene, operator overloading ${d.dialect.operators}.` : ''}`,
             `Revision: ${s.revision}. Edits: ${s.editMode === 'review' ? 'proposed to the user, who accepts or rejects them' : 'applied directly (the user can undo)'}.`,
             `Status: ${s.status}. Time ${fmtTime(s.time)} of ${fmtTime(s.duration)}. Cursor on line ${s.cursorLine}.${s.selection ? ` Selected: ${s.selection.name} (${s.selection.kind}${s.selection.line ? `, line ${s.selection.line}` : ''}).` : ''}`,
@@ -640,6 +648,33 @@ export function createMcpServer(link: EditorLink): McpServer {
         },
         ({note, r}) => ({...text(withNote(note, formatExport(r))), isError: !r.path}),
       ),
+  );
+
+  server.registerTool(
+    'add_sound_file',
+    {
+      title: 'Add a sound clip to the project',
+      description:
+        'Add a sound file from this machine (mp3, wav, ogg, m4a, aac, flac, opus) to the project open in the editor, as the user does in the Sounds tab. Scenes then play it by file name: `add_sound "click.mp3"` (optionally `time_offset: 0.5, gain: -6`, in seconds and decibels) in a Manim scene, or `sound("click.mp3").play()` with `sound` from @canvas-commons/core in a native one (it also has `.gain(dB)`, `.trim(start, end)`, `.playbackRate(rate)`). The sound becomes part of exported videos and web embeds. get_editor_state lists the sounds already there.',
+      inputSchema: {
+        path: z.string().describe("The sound file. Relative paths start at this server's working directory."),
+        name: z.string().optional().describe('The name scenes will use, with its extension. Default: the file name.'),
+      },
+    },
+    async ({path, name}) => {
+      const file = resolve(path.replace(/^~(?=$|[\\/])/, homedir()));
+      let data: Buffer;
+      try {
+        if (statSync(file).size > 40 * 1024 * 1024) return failure('That file is larger than 40 MB: too large for a sound clip.');
+        data = readFileSync(file);
+      } catch (e) {
+        return failure(`Could not read ${file}: ${(e as Error).message}`);
+      }
+      return viaEditor(
+        () => link.call('addAsset', {name: name ?? basename(file), data: data.toString('base64')}, 60_000),
+        r => text(`Added ${r.name} (${kB(r.bytes)}). Play it with \`add_sound "${r.name}"\` (Manim style) or \`sound("${r.name}").play()\` (Canvas Commons style).\nSounds in the project: ${r.sounds.map(s => s.name).join(', ')}.`),
+      );
+    },
   );
 
   server.registerTool(

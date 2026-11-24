@@ -11,7 +11,11 @@ import {addedLines} from '../runtime/textdiff';
 import {toAt, toCamelCase, toExplicitYield, toImplicitYield, toSelf, toSnakeCase} from '../runtime/dialect';
 import {Engine, InspectInfo, ItemId, OutlineNode, SceneEntry, Timeline} from '../runtime/engine';
 import {apiNames} from '../manim';
-import {createAgentBridge} from './agent';
+import {setAssetUrls} from '../runtime/assets';
+import {createAgentBridge, namingOf} from './agent';
+import {createAssetStore} from './assets';
+import {Folder, folderSupported, pickFolder, rememberedFolder, rememberFolder} from './folder';
+import {createProject, sceneOfFile} from './project';
 import {BLANK_MANIM, BLANK_NATIVE, BLANK_NATIVE_TSX, Example, examples} from './examples';
 import {createExporter, ExportFile, ExportRequest} from './export';
 import {fileBase, lastScene, loadScenes, nameFromFile, newSceneId, rememberScene, saveScenes, SceneRecord, sceneSlug, uniqueName} from './scenes';
@@ -96,13 +100,21 @@ export const languageOf = (_example: Example, s: Settings): Language => s.langua
 
 const isManimText = (code: string) => /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code) || /from\s*['"]manim['"]/.test(code);
 
+/** The dialect a Civet scene from outside the editor is written in, as far as its text shows. */
+const detectDialect = (code: string): Dialect => ({
+  naming: namingOf(code),
+  // Text with `yield*` written out passes through the implicit dialect unchanged.
+  yieldStyle: 'implicit',
+  selfStyle: /(?<![\w.$@])self\./.test(code) ? 'self' : 'at',
+});
+
 const toDoc = (r: SceneRecord): Example => ({slug: sceneSlug(r.id), title: r.name, description: '', style: r.style, order: 0, code: '', user: true});
 
 /** What the export dialog shows. */
 export type ExportJob =
   | {phase: 'idle'}
   | {phase: 'working'; request: ExportRequest; progress: number; realtime: boolean}
-  | {phase: 'done'; request: ExportRequest; file: ExportFile; url: string}
+  | {phase: 'done'; request: ExportRequest; file: ExportFile; url: string; savedTo?: string}
   | {phase: 'error'; request: ExportRequest; message: string};
 
 export function createEditorState() {
@@ -190,6 +202,7 @@ export function createEditorState() {
   const keep = (example: Example, s: Settings, code: string, provenance?: Provenance): boolean => {
     if (example.user) {
       store(example, s, code, provenance);
+      project.changed(example.slug);
       // Keep the list ordered by last edit without rewriting it on every keystroke.
       const record = records.find(r => sceneSlug(r.id) === example.slug);
       if (record && Date.now() - record.updated > 60_000) {
@@ -234,6 +247,7 @@ export function createEditorState() {
   const addScene = (...args: Parameters<typeof storeScene>): Example => {
     const doc = storeScene(...args);
     syncScenes();
+    project.changed(doc.slug);
     return doc;
   };
   const initialDoc = all.find(e => e.slug === initialSlug)!;
@@ -281,6 +295,13 @@ export function createEditorState() {
   const [importNotes, setImportNotes] = createSignal<string[]>([]);
   const [exportOpen, setExportOpenSignal] = createSignal(false);
   const [exportJob, setExportJob] = createSignal<ExportJob>({phase: 'idle'});
+  /** The project folder: connected, or remembered but waiting for the browser's permission (`locked`). */
+  const [folderState, setFolderState] = createSignal<{name: string; locked: boolean} | null>(null);
+  /** How many sounds the open scene plays. */
+  const [soundCount, setSoundCount] = createSignal(0);
+  const [audible, setAudibleSignal] = createSignal(true);
+  /** The code pane's editor, for actions that type into it (set by the pane). */
+  let codeEditor: {insertLine(text: string): void} | null = null;
   /** Lines (1-based) the agent's last edit added or changed, until the author edits again. */
   const [agentLines, setAgentLines] = createSignal<number[]>([]);
   /** Messages about the last language conversion, shown under the code pane header. */
@@ -344,6 +365,21 @@ export function createEditorState() {
     setDiagnostics(list);
     if (list.length) setStatus('error');
   });
+  engine.on('sounds', count => setSoundCount(count));
+  engine.audible = true;
+
+  // Sound clips, by file name. A change re-runs the scene: a clip that was missing may be there now.
+  const assets = createAssetStore(urls => {
+    setAssetUrls(urls);
+    if (assetsLoaded) void run();
+  });
+  let assetsLoaded = false;
+  const assetsReady = assets
+    .refresh()
+    .catch(() => {})
+    .then(() => {
+      assetsLoaded = true;
+    });
 
   let lastInspect = 0;
   let inspectTimer: number | undefined;
@@ -373,6 +409,8 @@ export function createEditorState() {
     clearTimeout(runTimer);
     const ticket = ++runCount;
     setStatus('running');
+    await assetsReady;
+    if (ticket !== runCount) return;
     const started = performance.now();
     const s = current.settings;
     const result = compileScene(current.source, {...compileOptionsOf(s), language: s.language});
@@ -505,18 +543,75 @@ export function createEditorState() {
       record.name = uniqueName(wanted, records.filter(r => r !== record).map(r => r.name));
       all[all.indexOf(ex)] = toDoc(record);
       syncScenes();
+      project.changed(ex.slug);
     },
     /** Remove the open scene (one of the author's own) and open the next one. */
     deleteScene() {
       const ex = all.find(e => e.slug === current.slug)!;
       if (!ex.user) return;
-      records = records.filter(r => sceneSlug(r.id) !== ex.slug);
-      all.splice(all.indexOf(ex), 1);
-      writeBuffer(ex.slug, null);
-      syncScenes();
-      const next = all.find(e => e.user);
-      if (next) actions.loadExample(next.slug, false);
-      else actions.newScene('manim');
+      void project.removed(records.find(r => sceneSlug(r.id) === ex.slug)?.file);
+      forget(ex.slug);
+    },
+    /** Keep the author's scenes in a folder on disk from now on (asks which). */
+    async chooseFolder() {
+      let folder: Folder;
+      try {
+        folder = await pickFolder();
+      } catch {
+        return; // Cancelled.
+      }
+      if (!(await folder.allowed(true))) return;
+      await rememberFolder(folder);
+      await useFolder(folder, true);
+    },
+    /** After a reload the browser wants a click before the folder may be used again. */
+    async reconnectFolder() {
+      const folder = project.remembered();
+      if (folder && (await folder.allowed(true))) await useFolder(folder, false);
+    },
+    async disconnectFolder() {
+      project.disconnect();
+      await rememberFolder(null);
+      await assets.setFolder(null);
+    },
+    /** Add sound clips to the project. */
+    async addSounds(files: Iterable<File>) {
+      const problems: string[] = [];
+      for (const file of files) {
+        try {
+          await assets.add(file, file.name);
+        } catch (e) {
+          problems.push((e as Error).message);
+        }
+      }
+      if (problems.length) setNotice(problems);
+    },
+    removeSound(name: string) {
+      void assets.remove(name);
+    },
+    /** Put the line that plays a clip on the line after the cursor. */
+    insertSound(name: string) {
+      const s = current.settings;
+      const quoted = JSON.stringify(name);
+      let line: string;
+      if (isManimText(current.source)) {
+        const method = s.naming === 'camel' ? 'addSound' : 'add_sound';
+        line = s.language === 'tsx' ? `this.${method}(${quoted});` : `${s.selfStyle === 'self' ? 'self.' : '@'}${method} ${quoted}`;
+      } else {
+        line = s.language === 'tsx' ? `sound(${quoted}).play();` : `sound(${quoted}).play()`;
+        if (!/\bsound\b[^\n]*from\s*['"]@(canvas-commons|motion-canvas)\/core['"]/.test(current.source)) {
+          setNotice(['`sound` comes from "@canvas-commons/core": add it to that import.']);
+        }
+      }
+      codeEditor?.insertLine(line);
+    },
+    /** The code pane hands over its editor (null when it goes away). */
+    attachCodeEditor(editor: {insertLine(text: string): void} | null) {
+      codeEditor = editor;
+    },
+    setAudible(value: boolean) {
+      setAudibleSignal(value);
+      engine.setAudible(value);
     },
     /**
      * Translate Manim Python into the author's language and dialect:
@@ -693,8 +788,11 @@ export function createEditorState() {
           exportControl,
         );
         const url = URL.createObjectURL(file.blob);
-        triggerDownload(url, file.fileName);
-        setExportJob({phase: 'done', request, file, url});
+        // With a project folder the file goes next to the scenes; otherwise to the browser's downloads.
+        const folder = project.folder();
+        const savedTo = folder ? await folder.writeExport(file.fileName, file.blob).catch(() => undefined) : undefined;
+        if (!savedTo) triggerDownload(url, file.fileName);
+        setExportJob({phase: 'done', request, file, url, savedTo});
       } catch (e) {
         if ((e as Error).name === 'ExportCancelled') setExportJob({phase: 'idle'});
         else setExportJob({phase: 'error', request, message: (e as Error).message ?? String(e)});
@@ -703,6 +801,98 @@ export function createEditorState() {
       }
     },
   };
+
+  /** Remove one of the author's scenes from the editor (its file is not touched). */
+  const forget = (slug: string) => {
+    const ex = all.find(e => e.slug === slug);
+    if (!ex?.user) return;
+    records = records.filter(r => sceneSlug(r.id) !== slug);
+    all.splice(all.indexOf(ex), 1);
+    writeBuffer(slug, null);
+    syncScenes();
+    if (slug !== current.slug) return;
+    const next = all.find(e => e.user);
+    if (next) actions.loadExample(next.slug, false);
+    else actions.newScene('manim');
+  };
+
+  // The project folder: `project.ts` decides what to read and write, this applies it.
+  const project = createProject(
+    {
+      scenes: () =>
+        records.map(r => {
+          const slug = sceneSlug(r.id);
+          const stored = readBuffer(slug);
+          return {slug, name: r.name, language: stored?.language ?? 'civet', text: slug === current.slug ? current.source : (stored?.code ?? ''), file: r.file, pending: r.pending, synced: r.synced};
+        }),
+      openSlug: () => current.slug,
+      adopt(file, text) {
+        const {name, language} = sceneOfFile(file);
+        // The file keeps its name; a scene that only lives in the browser makes room.
+        const clash = records.find(r => !r.file && r.name.toLowerCase() === name.toLowerCase());
+        if (clash) {
+          clash.name = uniqueName(name, [name, ...records.map(r => r.name)]);
+          const at = all.findIndex(e => e.slug === sceneSlug(clash.id));
+          if (at >= 0) all[at] = toDoc(clash);
+        }
+        const doc = storeScene(name, isManimText(text) ? 'manim' : 'canvas-commons', text, language, detectDialect(text));
+        records.find(r => sceneSlug(r.id) === doc.slug)!.file = file;
+        syncScenes();
+      },
+      reload(slug, text) {
+        const stored = readBuffer(slug);
+        const language = stored?.language ?? 'civet';
+        const dialect = detectDialect(text);
+        writeBuffer(slug, {code: text, ...dialect, language});
+        if (slug !== current.slug) return;
+        const shown = language === 'civet' ? convertDialect(text, dialect, dialectOf(current.settings)) : text;
+        if (shown === current.source) return;
+        current.provenance = undefined;
+        replaceSource(shown);
+        setAgentLines([]);
+        setNotice([`Reloaded: ${records.find(r => sceneSlug(r.id) === slug)?.file ?? 'the file'} changed on disk.`]);
+        void run();
+      },
+      moved(slug, file) {
+        const record = records.find(r => sceneSlug(r.id) === slug);
+        if (!record) return;
+        record.name = uniqueName(sceneOfFile(file).name, records.filter(r => r !== record).map(r => r.name));
+        record.file = file;
+        const at = all.findIndex(e => e.slug === slug);
+        if (at >= 0) all[at] = toDoc(record);
+        syncScenes();
+      },
+      drop: forget,
+      mark(slug, file, pending, synced) {
+        const record = records.find(r => sceneSlug(r.id) === slug);
+        if (!record || (record.file === file && !!record.pending === pending && (synced === undefined || record.synced === synced))) return;
+        record.file = file;
+        record.pending = pending || undefined;
+        if (synced !== undefined) record.synced = synced;
+        else if (!file) record.synced = undefined;
+        saveScenes(records);
+      },
+      status: state => setFolderState(state),
+      notify: message => setNotice([message]),
+    },
+    {onPoll: () => void assets.refresh()},
+  );
+  const useFolder = async (folder: Folder, fresh: boolean) => {
+    try {
+      await project.connect(folder, fresh);
+      await assets.setFolder(folder);
+    } catch (e) {
+      setNotice([`The folder "${folder.name}" could not be used: ${(e as Error).message}`]);
+    }
+  };
+  // The folder used last time. The browser may want a click first ("locked").
+  if (folderSupported()) {
+    void rememberedFolder().then(async folder => {
+      if (!folder) return;
+      if (await folder.allowed(false)) await useFolder(folder, false);
+      else project.hold(folder);
+    });
+  }
 
   let exportControl = {cancelled: false};
   const exporter = createExporter({
@@ -714,6 +904,8 @@ export function createEditorState() {
     activeScene: () => current.scene,
     previewFps: () => current.fps,
     time: () => engine.frame / current.fps,
+    assets,
+    soundCount: () => engine.sounds().length,
   });
 
   const agent = createAgentBridge({
@@ -749,6 +941,8 @@ export function createEditorState() {
     goToSegment: actions.goToSegment,
     togglePlayback: actions.togglePlayback,
     exporter,
+    assets,
+    folder: folderState,
   });
 
   return {
@@ -786,6 +980,11 @@ export function createEditorState() {
     notice,
     agentLines,
     fileName,
+    assets,
+    folder: folderState,
+    folderSupported: folderSupported(),
+    soundCount,
+    audible,
     exportOpen,
     exportJob,
     /** Hosted previews (claude.ai artifacts) cannot hand files to the viewer. */

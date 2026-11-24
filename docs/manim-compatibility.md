@@ -36,6 +36,16 @@ be written either way (`fill_opacity: 0.5` or `fillOpacity: 0.5`).
 | Coordinate systems | `NumberLine`, `Axes`, `NumberPlane` | See [Graphing](#graphing). |
 | Graphs of functions | `ParametricFunction`, `FunctionGraph`, `TracedPath` | Sampled and smoothed like Manim (`use_smoothing: false` gives straight segments). `TracedPath(dot.get_center, dissipating_time: 1)`. |
 
+### Sound
+
+`self.add_sound("click.mp3", time_offset=0.5, gain=-6)` plays a clip of the
+project from the current time (`gain` in decibels), as in Manim. The file is
+named, not given by path: clips are added in the editor's Sounds tab and live
+in the project folder's `assets/` directory, or in the browser. The engine's
+own builder does more: `sound("click.mp3").trim(0.2, 1).playbackRate(1.5).play()`
+with `sound` imported from `@canvas-commons/core`. Sounds are part of exported
+videos and web embeds.
+
 ### Mobject methods
 
 | Kind | Methods |

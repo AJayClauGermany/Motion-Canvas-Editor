@@ -92,6 +92,14 @@ export interface EditorSnapshot {
   editMode: 'apply' | 'review';
   /** The user's own scenes, most recently edited first. */
   myScenes: {slug: string; title: string}[];
+  /**
+   * The folder on disk the user's scenes are saved in (its name only: a
+   * browser does not reveal the path), or null when they live in the browser.
+   * `locked`: the browser wants the user to reconnect it.
+   */
+  folder: {name: string; locked: boolean} | null;
+  /** Sound clips of the project, by the name scenes use. */
+  sounds: {name: string; bytes: number}[];
 }
 
 export interface EditResult {
@@ -138,6 +146,8 @@ export interface ExportReport {
   snippet?: string;
   /** Recorded while playing rather than frame by frame (no WebCodecs in this webview). */
   realtime?: boolean;
+  /** Sound in the file: the clips included, and a note when something is not as expected. */
+  sound?: {clips: number; codec?: string | null; note?: string};
   /** Set by the hub: where it wrote the file. */
   path?: string;
   /** Set by the hub when it could not write the file. */
@@ -213,6 +223,8 @@ export interface EditorMethods {
    */
   export(params: {format: ExportFormat; height?: number; fps?: number; width?: number; time?: number; saveTo?: SaveTarget}): ExportReport;
   reveal(params: {line?: number; time?: number; step?: number}): {ok: true};
+  /** Add a sound clip to the project (`data`: base64). */
+  addAsset(params: {name: string; data: string}): {name: string; bytes: number; sounds: {name: string; bytes: number}[]};
   /** The bundled examples (for a server that has no examples/ directory, like the desktop app). */
   examples(params: Record<string, never>): ExampleInfo[];
 }

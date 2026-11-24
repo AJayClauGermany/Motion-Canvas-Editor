@@ -5,7 +5,8 @@
  *
  * - `vite build`: builds the player (mode `player`) after the editor and copies
  *   it into the output directory.
- * - `vite` (dev): builds it on the first request and serves it.
+ * - `vite` (dev): builds it on the first request and serves it, and again
+ *   after the player's sources change.
  */
 import {copyFileSync, existsSync, readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
@@ -24,6 +25,10 @@ export function playerTemplatePlugin(root: string): Plugin {
       outDir = resolve(root, config.build.outDir);
     },
     configureServer(server) {
+      // The player is built from the engine: build it again after that changes.
+      server.watcher.on('change', file => {
+        if (/player\.html$|[\\/]src[\\/](player\.ts|runtime[\\/]|manim[\\/])/.test(file)) building = null;
+      });
       server.middlewares.use(async (req, res, next) => {
         if (req.url?.split('?')[0] !== `/${PLAYER_TEMPLATE}`) return next();
         try {

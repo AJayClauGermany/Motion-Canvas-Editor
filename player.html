@@ -18,6 +18,12 @@
       #track { flex: 1; height: 4px; background: rgba(255, 255, 255, 0.22); transition: height 0.1s; }
       #bar:hover #track { height: 8px; }
       #fill { height: 100%; width: 0; background: #58c4dd; }
+      #sound { position: fixed; right: 10px; bottom: 30px; width: 34px; height: 34px; border: 0; border-radius: 50%; padding: 7px; background: rgba(0, 0, 0, 0.55); cursor: pointer; display: none; opacity: 0; transition: opacity 0.15s; }
+      body.has-sound #sound { display: block; }
+      body:hover #sound, body.paused #sound, #sound:focus-visible, body:not(.sound-on) #sound { opacity: 1; }
+      #sound svg { width: 20px; height: 20px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; }
+      #sound .on, body.sound-on #sound .off { display: none; }
+      body.sound-on #sound .on { display: inline; }
       body.bare #bar, body.bare #big { display: none; }
       #message { position: fixed; inset: 0; display: none; place-items: center; padding: 24px; text-align: center; color: #9aa5b8; white-space: pre-wrap; }
       body.failed #message { display: grid; }
@@ -27,6 +33,9 @@
     <div id="stage" role="button" aria-label="Play or pause the animation" tabindex="0"></div>
     <div id="big" aria-hidden="true"><span><svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z" /></svg></span></div>
     <div id="bar" role="slider" aria-label="Position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"><div id="track"><div id="fill"></div></div></div>
+    <button id="sound" aria-label="Sound" aria-pressed="false" title="Sound">
+      <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z" fill="#fff" stroke="none" /><path class="on" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" /><path class="off" d="M17 9.5l5 5M22 9.5l-5 5" /></svg>
+    </button>
     <div id="message"></div>
     <script type="application/json" id="mce-scene">"__MCE_SCENE_DATA__"</script>
     <script type="module" src="/src/player.ts"></script>

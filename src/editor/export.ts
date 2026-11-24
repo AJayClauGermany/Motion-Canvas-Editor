@@ -12,6 +12,7 @@
  */
 import type {CompileOptions} from '../runtime/compile';
 import {compileScene} from '../runtime/compile';
+import {usedAssets} from '../runtime/assets';
 import {buildEmbedHtml, embedData, embedSnippet} from '../runtime/embed';
 import type {Engine} from '../runtime/engine';
 import type {RenderControl, RenderOutput} from '../runtime/export';
@@ -47,6 +48,11 @@ export interface ExportFile {
   snippet?: string;
   /** Recorded while playing, because this browser cannot encode frame by frame. */
   realtime?: boolean;
+  /**
+   * Sound: how many clips are in the file, and what went wrong if some are
+   * not. Missing when the scene plays no sound.
+   */
+  sound?: {clips: number; codec?: string | null; note?: string};
 }
 
 export const exportDefaults = {
@@ -98,6 +104,10 @@ export interface ExportHost {
   previewFps(): number;
   /** The preview's playhead, in seconds. */
   time(): number;
+  /** The project's sound clips. */
+  assets: {urls(): Record<string, string>; dataUrl(name: string): Promise<string | null>};
+  /** How many sounds the open scene plays. */
+  soundCount(): number;
 }
 
 let template: Promise<string> | null = null;
@@ -131,6 +141,7 @@ export function createExporter(host: ExportHost) {
     const time = r.kind === 'image' ? (r.time ?? host.time()) : undefined;
     const harness = await loadHarness({fps, scale});
     try {
+      harness.agent.setAssets(host.assets.urls());
       const result: {run: {diagnostics: {message: string; line?: number}[]; timedOut?: boolean}; output?: RenderOutput} = await harness.agent.export(
         host.getSource(),
         host.compileOptions(),
@@ -145,7 +156,22 @@ export function createExporter(host: ExportHost) {
       const o = result.output;
       // The blob belongs to the iframe's realm; copy it out before the frame goes away.
       const blob = new Blob([await o.blob.arrayBuffer()], {type: o.mime});
-      return named(r.kind, {blob, extension: o.extension, mime: o.mime, width: o.width, height: o.height, fps: o.fps, frames: o.frames, seconds: o.seconds, codec: o.codec});
+      const sound = o.audio
+        ? {
+            clips: o.audio.codec ? o.audio.clips : 0,
+            codec: o.audio.codec,
+            note: !o.audio.codec
+              ? 'This browser has no audio encoder, so the video is silent.'
+              : o.audio.failed.length
+                ? `${o.audio.failed.length} sound clip${o.audio.failed.length === 1 ? '' : 's'} could not be read and ${o.audio.failed.length === 1 ? 'is' : 'are'} missing from the video.`
+                : o.audio.codec === 'opus' && o.extension === 'mp4'
+                  ? 'The sound is Opus, because this browser cannot encode AAC. Chrome, Firefox and VLC play it; QuickTime may not.'
+                  : undefined,
+          }
+        : r.kind === 'gif' && host.soundCount() > 0
+          ? {clips: 0, note: 'A GIF has no sound.'}
+          : undefined;
+      return named(r.kind, {blob, extension: o.extension, mime: o.mime, width: o.width, height: o.height, fps: o.fps, frames: o.frames, seconds: o.seconds, codec: o.codec, sound});
     } finally {
       harness.dispose();
     }
@@ -156,7 +182,8 @@ export function createExporter(host: ExportHost) {
     const blob = await host.engine.record(p => onProgress(p, true));
     if (!blob) throw new Error('This browser cannot encode video. Open the editor in Chrome, Edge or Safari, or export a GIF or a web embed instead.');
     const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
-    return named('video', {blob, extension, mime: blob.type, realtime: true});
+    const sound = host.soundCount() > 0 ? {clips: 0, note: 'A recording made while playing has no sound.'} : undefined;
+    return named('video', {blob, extension, mime: blob.type, realtime: true, sound});
   };
 
   const run = async (request: ExportRequest, onProgress: (p: number, realtime: boolean) => void = () => {}, control: RenderControl = {cancelled: false}): Promise<ExportFile> => {
@@ -168,8 +195,16 @@ export function createExporter(host: ExportHost) {
       const compiled = compileScene(host.getSource(), host.compileOptions());
       if (!compiled.ok) throw new Error(`The scene does not compile, so there is nothing to export. ${compiled.diagnostics.map(d => `${d.line ? `line ${d.line}: ` : ''}${d.message}`).join(' ')}`);
       const title = host.title();
-      const html = buildEmbedHtml(await playerTemplate(), embedData(compiled, {title, scene: host.activeScene(), fps: host.previewFps()}));
-      const file = named('embed', {blob: new Blob([html], {type: 'text/html'}), extension: 'html', mime: 'text/html', width: BASE_WIDTH, height: BASE_HEIGHT});
+      // Only the clips this scene names travel with it, inside the file.
+      const packed: Record<string, string> = {};
+      for (const name of usedAssets(host.getSource(), Object.keys(host.assets.urls()))) {
+        const data = await host.assets.dataUrl(name);
+        if (data) packed[name] = data;
+      }
+      const clips = Object.keys(packed).length;
+      const html = buildEmbedHtml(await playerTemplate(), embedData(compiled, {title, scene: host.activeScene(), fps: host.previewFps(), assets: clips ? packed : undefined}));
+      const sound = clips ? {clips, note: 'It starts muted, like every autoplaying video; the speaker button turns the sound on.'} : undefined;
+      const file = named('embed', {blob: new Blob([html], {type: 'text/html'}), extension: 'html', mime: 'text/html', width: BASE_WIDTH, height: BASE_HEIGHT, sound});
       return {...file, snippet: embedSnippet(file.fileName, title)};
     }
     try {

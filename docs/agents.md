@@ -53,6 +53,7 @@ the Agent popover (editor) change the port together.
 | `render_preview` | yes | Frames as one PNG contact sheet, labelled with time, step and line |
 | `inspect_frame` | yes | Items on screen at a time with bounds, colours, text and lines; warnings for off-frame and overlapping text |
 | `export_scene` | yes | Export the open scene to a file, like the Export button: MP4 video (default), GIF, web embed (one HTML file plus the `<iframe>` tag) or PNG. Returns the path |
+| `add_sound_file` | yes | Add a sound clip from disk to the project; scenes play it by file name, and it ends up in the video and the web embed |
 | `reveal_in_editor` | yes | Move the editor to a line, time or step, to show the user something |
 
 \* The desktop app has no `examples/` directory, so there the examples come from the editor.
@@ -102,6 +103,7 @@ instead of buttons:
 | Write | the code pane | `edit_scene`, `write_scene` |
 | Check | problems list, timeline | the run report every edit returns, `check_scene` |
 | Look | the preview | `render_preview`, `inspect_frame` |
+| Sound | the **Sounds** tab: add a clip, **Use** | `add_sound_file`, then `add_sound "name"` in the scene |
 | Deliver | **Export** | `export_scene` |
 
 Both work on the same document, so the server keeps each side informed
@@ -121,6 +123,15 @@ Both work on the same document, so the server keeps each side informed
   summary, the lines it changed are marked until the user types again, and
   one Ctrl/Cmd+Z undoes it. Exports and renders are listed in the Agent
   popover.
+
+**The project folder is a third way in.** When the user saves their scenes in
+a folder (New ▾ → "Save my scenes in a folder…"), each scene is a `.civet` or
+`.tsx` file there, and the editor picks up changes made to those files within
+a couple of seconds (`src/editor/project.ts`). An agent with file access can
+therefore also work on the files directly, and so can the user's own editor.
+`get_editor_state` reports the folder's name; a browser does not reveal its
+path, so the agent has to be told where it is. The MCP tools remain the better
+route: they check and run what the agent writes and tell the user about it.
 
 `export_scene` runs the same exporter as the Export dialog
 (`src/editor/export.ts`). The file's bytes go from the page to the hub as
@@ -191,7 +202,10 @@ tools by their descriptions.
   to another one; every scene keeps its text.
 - What the agent "last saw" is kept per MCP session, in memory. A new session
   starts by reading the document.
-- `export_scene` exports the open scene only, without sound.
+- `export_scene` exports the open scene only. Its file goes where the agent
+  asks, not into the user's project folder.
+- `add_sound_file` sends the clip through the editor (base64), so it is meant
+  for clips, not long recordings: 40 MB at most.
 - Hints are heuristics on the text, not a type checker. The run in the hidden
   engine is the ground truth.
 - TSX → Civet keeps braces and parentheses where it cannot be sure; the result

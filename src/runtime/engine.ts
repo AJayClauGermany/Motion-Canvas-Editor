@@ -43,6 +43,7 @@ import {
   VMobject,
 } from '../manim';
 import {sceneFrameMarker as currentFrameMarker, setSceneSourceMarker} from '../manim/util';
+import {resolveAsset, takeMissingAssets} from './assets';
 import type {CompileResult, Diagnostic} from './compile';
 import {__decorate} from './decorators';
 
@@ -103,15 +104,20 @@ export interface EngineEvents {
   timeline(timeline: Timeline | null): void;
   diagnostics(list: Diagnostic[]): void;
   rendered(): void;
+  /** How many sounds the scene plays, after each full run. */
+  sounds(count: number): void;
 }
+
+/** Canvas Commons' core with `sound` taking the name of a project asset. */
+const coreWithAssets = {...core, sound: (audio: string | core.SoundBuilder) => core.sound(typeof audio === 'string' ? resolveAsset(audio) : audio)};
 
 const MODULES: Record<string, any> = {
   '@canvas-commons/2d': cc2d,
-  '@canvas-commons/core': core,
+  '@canvas-commons/core': coreWithAssets,
   '@canvas-commons/2d/jsx-runtime': jsxRuntime,
   // Motion Canvas snippets paste in unchanged.
   '@motion-canvas/2d': cc2d,
-  '@motion-canvas/core': core,
+  '@motion-canvas/core': coreWithAssets,
   '@motion-canvas/2d/jsx-runtime': jsxRuntime,
   '@motion-canvas/2d/lib/jsx-runtime': jsxRuntime,
   manim: api,
@@ -280,6 +286,8 @@ export class Engine {
   public activeScene: string | null = null;
   public fps = config.frameRate;
   public resolutionScale = 1;
+  /** Sound is off until asked for: a harness or an embed must not make noise on its own. */
+  public audible = false;
 
   private logger = new Logger();
   private onReplaced: ValueDispatcher<FullSceneDescription> | null = null;
@@ -345,6 +353,7 @@ export class Engine {
   public async load(compiled: CompileResult, preferredScene?: string | null): Promise<boolean> {
     this.runtimeDiagnostics = [];
     this.reported = false;
+    takeMissingAssets();
     if (!compiled.ok) {
       this.emit('diagnostics', compiled.diagnostics);
       return false;
@@ -461,7 +470,11 @@ export class Engine {
       // return) must not keep showing the previous scene's timeline.
       player.onRecalculated.subscribe(() => {
         if (!this.reported) this.emit('timeline', null);
+        for (const name of takeMissingAssets()) this.pushRuntimeError(`There is no sound called "${name}" in this project. Add the file in the Sounds tab (agents: add_sound_file), or check the spelling.`);
+        this.emit('sounds', this.sounds().length);
       });
+      // An editor is for hearing the result; the browser still waits for a click before it plays anything.
+      player.toggleAudio(this.audible);
       player.toggleLoop(true);
     } else {
       const previous: any = this.player.playback.currentScene;
@@ -577,6 +590,19 @@ export class Engine {
   }
   public setSpeed(speed: number) {
     this.player?.setSpeed(speed);
+  }
+  /** Whether the preview plays the scene's sounds. */
+  public setAudible(value: boolean) {
+    this.audible = value;
+    this.player?.toggleAudio(value);
+    // A browser keeps audio suspended until a click; this is called from one.
+    if (value) this.player?.audioPool.resume();
+  }
+  /** Every sound the scene plays, with its start time in seconds (from the last full run). */
+  public sounds(): core.Sound[] {
+    const scenes = this.player?.playback.onScenesRecalculated.current ?? [];
+    // The list as of the last full run: the live one empties whenever a seek restarts the scene.
+    return scenes.flatMap(scene => [...scene.sounds.onChanged.current]);
   }
   public async setQuality(fps: number, resolutionScale: number) {
     this.fps = fps;

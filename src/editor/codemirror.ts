@@ -113,6 +113,8 @@ export interface CodeEditor {
   setDoc(doc: string): void;
   setDiagnostics(list: Diagnostic[]): void;
   setPlayingLine(line: number | null): void;
+  /** Add `text` as a line of its own after the cursor's line, at that line's indentation. */
+  insertLine(text: string): void;
   /** Mark the lines (1-based) an agent changed; an empty list clears the marks. */
   setAgentLines(lines: number[]): void;
   revealLine(line: number): void;
@@ -242,6 +244,19 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
     },
     setAgentLines(lines) {
       view.dispatch({effects: setAgentLines.of(lines)});
+    },
+    insertLine(text) {
+      const doc = view.state.doc;
+      const line = doc.lineAt(view.state.selection.main.head);
+      // An empty line takes the indentation of the code above it.
+      let model = line;
+      while (!model.text.trim() && model.number > 1) model = doc.line(model.number - 1);
+      const indent = /^\s*/.exec(model.text)![0];
+      const blank = !line.text.trim();
+      const insert = blank ? `${indent}${text}` : `\n${indent}${text}`;
+      const from = blank ? line.from : line.to;
+      view.dispatch({changes: {from, to: line.to, insert}, selection: {anchor: from + insert.length}, scrollIntoView: true, userEvent: 'input'});
+      view.focus();
     },
     revealLine(line) {
       const doc = view.state.doc;

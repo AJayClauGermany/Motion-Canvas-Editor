@@ -9,6 +9,12 @@ export interface SceneRecord {
   style: 'manim' | 'canvas-commons';
   created: number;
   updated: number;
+  /** The file this scene is saved in, while a project folder is connected (`project.ts`). */
+  file?: string;
+  /** Edited since it was last written to the folder (the folder was out of reach). */
+  pending?: boolean;
+  /** Fingerprint of the file's text when the editor last read or wrote it. */
+  synced?: string;
 }
 
 const INDEX_KEY = 'mce.scenes.v1';

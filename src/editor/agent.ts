@@ -51,6 +51,10 @@ export interface AgentHost {
   /** The user's own scenes, most recently edited first. */
   myScenes: Accessor<Example[]>;
   exporter: Exporter;
+  /** The project's sound clips. */
+  assets: {list: Accessor<{name: string; size: number}[]>; urls(): Record<string, string>; add(data: Blob, name: string): Promise<string>};
+  /** The project folder, when scenes are saved to disk. */
+  folder: Accessor<{name: string; locked: boolean} | null>;
   settings: Settings;
   getSource(): string;
   example: Accessor<Example>;
@@ -125,7 +129,7 @@ function loadPrefs(): {enabled: boolean; port: number} {
 const isManimSource = (code: string) => /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code) || /from\s*['"]manim['"]/.test(code);
 
 /** Which spelling the code mostly uses for Manim-layer names. */
-function namingOf(code: string): 'snake' | 'camel' {
+export function namingOf(code: string): 'snake' | 'camel' {
   const known = knownNames();
   let snake = 0;
   let camel = 0;
@@ -143,14 +147,19 @@ function namingOf(code: string): 'snake' | 'camel' {
 class Sandbox {
   private ready: Promise<any> | null = null;
 
-  public agent(): Promise<any> {
-    return (this.ready ??= loadHarness().then(
+  public constructor(private readonly assetUrls: () => Record<string, string>) {}
+
+  /** The harness, with the project's sound clips as they are now. */
+  public async agent(): Promise<any> {
+    const agent = await (this.ready ??= loadHarness().then(
       h => h.agent,
       e => {
         this.ready = null;
         throw e;
       },
     ));
+    agent.setAssets(this.assetUrls());
+    return agent;
   }
 }
 
@@ -163,7 +172,7 @@ export function createAgentBridge(host: AgentHost) {
   const [status, setStatus] = createSignal<AgentStatus>('off');
   const [log, setLog] = createSignal<AgentLogEntry[]>([]);
   const [proposal, setProposal] = createSignal<AgentProposal | null>(null);
-  const sandbox = new Sandbox();
+  const sandbox = new Sandbox(() => host.assets.urls());
   let current = {enabled: prefs.enabled, port: prefs.port};
   let socket: WebSocket | null = null;
   let retry: number | undefined;
@@ -243,6 +252,8 @@ export function createAgentBridge(host: AgentHost) {
       cursorLine: host.cursorLine(),
       editMode: s.agentEdits,
       myScenes: host.myScenes().map(e => ({slug: e.slug, title: e.title})),
+      folder: host.folder(),
+      sounds: host.assets.list().map(a => ({name: a.name, bytes: a.size})),
     };
     if (params.includeSource !== false) snap.source = source;
     if (params.as && params.as !== language) {
@@ -425,9 +436,16 @@ export function createAgentBridge(host: AgentHost) {
       note(`Exporting ${format === 'embed' ? 'a web embed' : format === 'image' ? 'an image' : `a ${format}`}…`);
       const file = await host.exporter.run({kind: format, height, fps, width, time: format === 'image' ? (time ?? host.time()) : undefined});
       note(`Exported ${file.fileName}`, 'ok');
-      const report: ExportReport = {format, fileName: file.fileName, extension: file.extension, mime: file.mime, bytes: file.blob.size, width: file.width, height: file.height, fps: file.fps, frames: file.frames, seconds: file.seconds, codec: file.codec, snippet: file.snippet, realtime: file.realtime};
+      const report: ExportReport = {format, fileName: file.fileName, extension: file.extension, mime: file.mime, bytes: file.blob.size, width: file.width, height: file.height, fps: file.fps, frames: file.frames, seconds: file.seconds, codec: file.codec, snippet: file.snippet, realtime: file.realtime, sound: file.sound};
       outgoing.set(report, file.blob);
       return report;
+    },
+
+    async addAsset({name, data}) {
+      const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+      const saved = await host.assets.add(new Blob([bytes]), name);
+      note(`Added the sound ${saved}`, 'ok');
+      return {name: saved, bytes: bytes.byteLength, sounds: host.assets.list().map(a => ({name: a.name, bytes: a.size}))};
     },
 
     examples: () =>

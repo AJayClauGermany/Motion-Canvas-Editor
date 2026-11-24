@@ -16,6 +16,8 @@ export interface EmbedData {
   autoplay?: boolean;
   loop?: boolean;
   controls?: boolean;
+  /** The sound clips the scene uses, by name, as `data:` URLs: the file stays self-contained. */
+  assets?: Record<string, string>;
 }
 
 /** The data block of `player.html`, exactly as the build leaves it. */

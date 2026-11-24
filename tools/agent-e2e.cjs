@@ -66,7 +66,7 @@ const textOf = result => result.content.filter(c => c.type === 'text').map(c => 
 
     // Without an editor: static tools work, editor tools explain what to do.
     const tools = (await client.listTools()).tools.map(t => t.name);
-    check('server lists the tools', ['get_editor_state', 'edit_scene', 'write_scene', 'check_scene', 'render_preview', 'export_scene', 'read_docs', 'lookup_api'].every(t => tools.includes(t)), tools.join(', '));
+    check('server lists the tools', ['get_editor_state', 'edit_scene', 'write_scene', 'check_scene', 'render_preview', 'export_scene', 'add_sound_file', 'read_docs', 'lookup_api'].every(t => tools.includes(t)), tools.join(', '));
     check('server sends instructions', /Civet pitfalls/.test(client.getInstructions() ?? ''));
     const noEditor = await call('get_editor_state');
     check('editor tools say how to connect when no editor is open', noEditor.isError && /switch on "Agent"/.test(textOf(noEditor)), textOf(noEditor));
@@ -218,6 +218,33 @@ export class Demo extends Scene {
     check("get_editor_state says whose document it is", /one of the user's own scenes/.test(listed), listed.slice(0, 300));
     const overwrite = await call('write_scene', {code: 'from manim import *\n\nclass Hello extends Scene\n  construct()\n    @play Write Text "hello"\n    @wait 1\n'});
     check('write_scene replaces a scene the agent has read', !overwrite.isError && /Run: ok/.test(textOf(overwrite)), textOf(overwrite).slice(0, 300));
+
+    // Sound: a clip from disk goes into the project, a scene plays it by name, the video carries it.
+    const wav = Buffer.alloc(44 + 8000);
+    wav.write('RIFF', 0);
+    wav.writeUInt32LE(36 + 8000, 4);
+    wav.write('WAVEfmt ', 8);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(8000, 24);
+    wav.writeUInt32LE(16000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write('data', 36);
+    wav.writeUInt32LE(8000, 40);
+    for (let i = 0; i < 4000; i++) wav.writeInt16LE(Math.round(Math.sin(i / 3) * 9000), 44 + i * 2);
+    fs.writeFileSync(path.join(out, 'chime.wav'), wav);
+    const silent = textOf(await call('edit_scene', {edits: [{old: '    @wait 1', new: '    @add_sound "chime.wav"\n    @wait 1'}], summary: 'Add a chime'}));
+    check('a sound that is not in the project is reported', /no sound called "chime\.wav"/.test(silent), silent.slice(0, 400));
+    const added = textOf(await call('add_sound_file', {path: path.join(out, 'chime.wav')}));
+    check('add_sound_file adds a clip from disk', /Added chime\.wav/.test(added), added);
+    const heard = textOf(await call('check_scene'));
+    check('the scene runs once the clip is there', /Run: ok/.test(heard) && !/no sound called/.test(heard), heard.slice(0, 400));
+    const state2 = textOf(await call('get_editor_state', {include_source: false}));
+    check('get_editor_state lists the sounds', /Sounds .*chime\.wav/.test(state2), state2.slice(0, 600));
+    const loud = textOf(await call('export_scene', {path: exportDir}));
+    check('export_scene puts the sound in the video', /Sound: 1 clip/.test(loud), loud);
 
     // Opening an example, and pointing the user at a step.
     const opened = textOf(await call('open_scene', {example: 'cc-quickstart'}));

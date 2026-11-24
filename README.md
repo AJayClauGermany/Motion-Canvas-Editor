@@ -77,17 +77,73 @@ In the Claude Code cloud sandbox, run `tools/sandbox/setup.sh` first (see
 | Reference pane | The source an example was ported from (Manim Python, or Canvas Commons TSX), or the compiled output, next to your source |
 | My scenes | The editor opens on your own scene (a new one the first time, the last one after that). **+ New** adds another; its menu starts from the other style, a file, Manim Python or a copy. Scenes are saved in the browser as you type and renamed in place |
 | Import Python | Paste a Manim scene in Python; a converter rewrites it to Civet and opens it as a new scene |
+| Project folder | New ▾ → "Save my scenes in a folder…": every scene becomes a file in a folder you pick, written as you type and reloaded when something else changes it. See below |
+| Sounds | The Sounds tab holds the project's clips. **Use** adds the line that plays one; the preview plays it, and it is part of the video and the web embed |
 | Export | One button (Ctrl/Cmd+Shift+E), then Enter: MP4 video, GIF, web embed, PNG of the current frame, or the code. See below |
 | Agent | Connect an AI agent you already use (Claude Code, Cursor, …) over MCP: it can read, edit, check and render the scene. See below |
 
 Edits re-run after 250 ms and keep the playhead where it was. If the code does
 not compile, the preview keeps showing the last version that did.
 
+## Project folder
+
+Without one, your scenes live in the browser's storage. With one, they are
+files:
+
+```
+my-project/
+  Intro.civet          one file per scene, named after it
+  Demo.tsx
+  assets/click.mp3     sound clips
+  exports/intro.mp4    what Export writes (instead of the downloads folder)
+```
+
+- Pick the folder once (New ▾ → "Save my scenes in a folder…"). The scenes you
+  already have are written into it, and scene files already there are opened.
+- The editor writes a scene a moment after each edit, renames its file when
+  you rename the scene, and deletes it when you delete the scene.
+- Changes made to the files by anything else (your own editor, an AI agent
+  with file access, `git checkout`) are picked up within two seconds: changed
+  files reload, new files appear in the scene list, deleted files leave it.
+- After a reload the browser asks before it lets the page use the folder
+  again: click **Reconnect**. Until then edits are kept in the browser and
+  written afterwards. If a file changed on disk in the meantime as well, the
+  file wins and your version is saved next to it as "… (unsaved copy)".
+- The folder chip in the top bar switches to another folder or stops using
+  one; the scenes then stay in the browser and the files stay on disk.
+
+This uses the browser's File System Access API, which Chrome and Edge have.
+Safari, Firefox and the desktop app's webview do not, so there the menu entry
+is missing and scenes stay in browser storage.
+
+## Sound
+
+Add clips in the **Sounds** tab (or drop files on it): mp3, wav, ogg, m4a,
+aac, flac, opus. A scene plays a clip by its file name:
+
+```civet
+@add_sound "click.mp3"                          # Manim style; from the current time
+@add_sound "whoosh.wav", time_offset: 0.5, gain: -6
+```
+
+```tsx
+import {sound} from '@canvas-commons/core';
+sound('click.mp3').play();                       // Canvas Commons style
+sound('music.mp3').trim(2, 10).gain(-12).play();
+```
+
+The preview plays it (the speaker button in the transport mutes it). The
+video export mixes every clip into one track: AAC where the browser can encode
+it, Opus otherwise; the dialog says so when that happens, because QuickTime
+may not play it. The web embed carries the clips it uses inside the HTML file
+and starts muted with a speaker button, as browsers require of anything that
+plays on its own. A GIF has no sound.
+
 ## Export
 
 | Format | What you get | Default | Options |
 |---|---|---|---|
-| Video | MP4 (H.264), every frame rendered exactly | 1080p, 30 fps | 720p · 1080p · 4K, 30 · 60 fps |
+| Video | MP4 (H.264) with the scene's sound, every frame rendered exactly | 1080p, 30 fps | 720p · 1080p · 4K, 30 · 60 fps |
 | GIF | A looping GIF | 640 px wide, 20 fps | 480 · 640 · 960 px |
 | Web embed | One self-contained HTML file with a small player (click to pause, scrub bar), and the `<iframe>` line to paste into your page | plays and loops while on screen | in the URL hash: `#autoplay=0&loop=0&controls=0&t=1.5` |
 | Image | PNG of the frame under the playhead | 1080p | 720p · 1080p · 4K |
@@ -261,15 +317,22 @@ example at `vite preview`).
   Manim side, and a mobject hosted in a native tree is not a flex item. The
   full list is in [docs/manim-compatibility.md](docs/manim-compatibility.md)
   under "Mixing with Canvas Commons nodes".
-- Exports have no sound, and a GIF uses a separate palette per frame (fine for
-  flat graphics, visible banding on gradients).
+- A GIF uses a separate palette per frame (fine for flat graphics, visible
+  banding on gradients).
+- Sound in a video is AAC only where the browser has an AAC encoder. The
+  headless Linux Chromium the tests run in has none and writes Opus into the
+  MP4; other browsers have not been checked. The real-time fallback records no
+  sound.
 - Frame-exact video needs WebCodecs. Whether the Linux desktop webview
   (WebKitGTK) has it has not been checked; without it the export records in
   real time, and without `MediaRecorder` too there is no video export.
-- Your scenes live in this browser's storage: there is no project folder and
-  no sync between machines yet. Export → Code downloads a scene, and
-  New → Open a file brings one back.
+- The project folder needs Chrome or Edge. The desktop app cannot use one yet:
+  its webview lacks the API, and the shell has no file bridge of its own.
+- Assets are sound clips only; images and SVG are not supported by the Manim
+  layer.
 
 ## Licence
 
-See [LICENSE](LICENSE).
+See [LICENSE](LICENSE). Dependencies keep their own licences; the one that is
+not permissive is Mediabunny (MPL-2.0, used unmodified for video export). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

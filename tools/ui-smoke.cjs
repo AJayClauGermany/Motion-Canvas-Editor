@@ -33,6 +33,69 @@ const check = (name, ok, detail = '') => {
   const shot = name => page.screenshot({path: path.join(out, `${name}.png`)});
   const settle = (ms = 500) => page.waitForTimeout(ms);
 
+  // A project folder is picked in a system dialog, which a headless browser does not have:
+  // the browser's private file system stands in for it (same handle API).
+  await page.addInitScript(() => {
+    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('my-project', {create: true});
+    // A real folder needs the user's OK again after a reload; the test decides when.
+    const query = FileSystemHandle.prototype.queryPermission;
+    FileSystemHandle.prototype.queryPermission = function (options) {
+      return sessionStorage.getItem('lockFolder') ? Promise.resolve('prompt') : query.call(this, options);
+    };
+    FileSystemHandle.prototype.requestPermission = function () {
+      sessionStorage.removeItem('lockFolder');
+      return Promise.resolve('granted');
+    };
+  });
+  /** The folder's files: text, or a size for anything large or binary. */
+  const disk = () =>
+    page.evaluate(async () => {
+      const files = {};
+      const walk = async (dir, prefix) => {
+        for await (const [name, handle] of dir.entries()) {
+          if (handle.kind !== 'file') await walk(handle, `${prefix}${name}/`);
+          else {
+            const file = await handle.getFile();
+            files[prefix + name] = /\.(civet|tsx)$/.test(name) ? await file.text() : file.size;
+          }
+        }
+      };
+      await walk(await (await navigator.storage.getDirectory()).getDirectoryHandle('my-project', {create: true}), '');
+      return files;
+    });
+  /** Something other than the editor changes the folder (another editor, an agent). */
+  const outside = (name, text) =>
+    page.evaluate(
+      async ([name, text]) => {
+        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('my-project', {create: true});
+        if (text === null) return dir.removeEntry(name);
+        const writable = await (await dir.getFileHandle(name, {create: true})).createWritable();
+        await writable.write(text);
+        await writable.close();
+      },
+      [name, text],
+    );
+  /** A short sine tone as a WAV file. */
+  const tone = (seconds, hz) => {
+    const rate = 22050;
+    const n = Math.round(seconds * rate);
+    const data = Buffer.alloc(44 + n * 2);
+    data.write('RIFF', 0);
+    data.writeUInt32LE(36 + n * 2, 4);
+    data.write('WAVEfmt ', 8);
+    data.writeUInt32LE(16, 16);
+    data.writeUInt16LE(1, 20);
+    data.writeUInt16LE(1, 22);
+    data.writeUInt32LE(rate, 24);
+    data.writeUInt32LE(rate * 2, 28);
+    data.writeUInt16LE(2, 32);
+    data.writeUInt16LE(16, 34);
+    data.write('data', 36);
+    data.writeUInt32LE(n * 2, 40);
+    for (let i = 0; i < n; i++) data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * 12000), 44 + i * 2);
+    return data;
+  };
+
   // First launch: a scene of the author's own, ready to write in.
   await page.goto(base + '/');
   await page.waitForSelector('.block', {timeout: 60000});
@@ -88,6 +151,88 @@ const check = (name, ok, detail = '') => {
     await embedPage.screenshot({path: path.join(out, '00-embed-page.png')});
     await embedPage.close();
   }
+
+  // Sound: add a clip, use it, and it is in the video and in the web embed.
+  const text = () => page.locator('.cm-content').first().innerText();
+  fs.writeFileSync(path.join(out, 'beep.wav'), tone(0.3, 880));
+  await page.getByRole('button', {name: 'Sounds', exact: true}).click();
+  await page.locator('.add-sound input').setInputFiles(path.join(out, 'beep.wav'));
+  await page.waitForSelector('.asset-list li', {timeout: 10000}).catch(() => {});
+  await page.locator('.cm-line', {hasText: '@play Write title'}).click();
+  await page.getByRole('button', {name: 'Use', exact: true}).click();
+  await page.waitForSelector('.transport [aria-label="Sound"]', {timeout: 10000}).catch(() => {});
+  check('a clip added in the Sounds tab is used with one click', /@add_sound "beep\.wav"/.test(await text()) && (await page.locator('.transport [aria-label="Sound"]').count()) === 1 && (await page.locator('.problems li').count()) === 0);
+  await shot('00-sounds');
+  await page.getByRole('button', {name: 'Export', exact: true}).click();
+  const loud = await exported('Video');
+  const doneText = (await page.locator('.export-done').innerText()).replace(/\s+/g, ' ');
+  // The audio track's codec is named in the file: `mp4a` for AAC, `Opus` where the browser cannot encode AAC.
+  check('the exported video has a sound track', /with sound/.test(doneText) && (loud.bytes.includes('mp4a') || loud.bytes.includes('Opus')), doneText);
+  const loudEmbed = await exported('Web embed');
+  check('the web embed carries the clip inside the file', /data:audio\/(wav|x-wav);base64/.test(loudEmbed.bytes.toString()));
+  await page.getByRole('button', {name: 'Done', exact: true}).click();
+  {
+    const embedPage = await browser.newPage({viewport: {width: 640, height: 360}});
+    await embedPage.goto('file://' + path.join(out, 'export-my-first-scene.html'));
+    await embedPage.waitForSelector('body.has-sound', {timeout: 20000}).catch(() => {});
+    await embedPage.locator('#sound').click().catch(() => {});
+    check('the embed offers a speaker button and starts muted', (await embedPage.locator('body.has-sound.sound-on').count()) === 1);
+    await embedPage.close();
+  }
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type('@add_sound "nope.wav"');
+  await page.waitForSelector('.problems li', {timeout: 10000}).catch(() => {});
+  check('a sound that is not in the project is a problem with a way out', /no sound called "nope\.wav"/.test(await page.locator('.problems').innerText().catch(() => '')));
+  for (let i = 0; i < 21; i++) await page.keyboard.press('Backspace');
+  await page.waitForFunction(() => document.querySelectorAll('.problems li').length === 0, null, {timeout: 10000}).catch(() => {});
+
+  // Project folder: every scene is a file, in both directions.
+  await page.getByRole('button', {name: 'More ways to start a scene'}).click();
+  await page.getByRole('menuitem', {name: 'Save my scenes in a folder…'}).click();
+  await page.waitForSelector('.folder-chip', {timeout: 10000}).catch(() => {});
+  await settle(800);
+  let files = await disk();
+  check('connecting a folder writes the scenes and the sounds into it', /@add_sound "beep\.wav"/.test(files['My first scene.civet'] ?? '') && files['assets/beep.wav'] > 1000, Object.keys(files).join(', '));
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type('# typed in the editor');
+  await settle(900);
+  check('an edit reaches the file as you type', /# typed in the editor/.test((await disk())['My first scene.civet']));
+  await outside('My first scene.civet', (await disk())['My first scene.civet'].replace('"Hello!"', '"Hello, disk!"'));
+  await outside('From outside.tsx', "import {makeScene2D, Circle} from '@canvas-commons/2d';\nimport {waitFor} from '@canvas-commons/core';\n\nexport default makeScene2D(function* (view) {\n  view.add(<Circle size={200} fill=\"#58c4dd\" />);\n  yield* waitFor(1);\n});\n");
+  await page.waitForFunction(() => /Hello, disk!/.test(document.querySelector('.cm-content')?.textContent ?? ''), null, {timeout: 10000}).catch(() => {});
+  check('a file edited outside the editor is reloaded', /Hello, disk!/.test(await text()) && /changed on disk/.test(await page.locator('.notice').innerText().catch(() => '')) && (await page.locator('.problems li').count()) === 0);
+  const mine = () => page.locator('.scene-select optgroup').first().locator('option').allInnerTexts();
+  check('a file added outside the editor becomes a scene', (await mine()).includes('From outside'), (await mine()).join(', '));
+  await shot('00-folder');
+  await page.getByRole('button', {name: 'Export', exact: true}).click();
+  await page.locator('.export-kinds button').filter({has: page.locator('b', {hasText: /^GIF$/})}).click();
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.export-done', {timeout: 60000}).catch(() => {});
+  check('with a folder, exports are saved into it', /my-project\/exports\/my-first-scene\.gif/.test(await page.locator('.export-done').innerText().catch(() => '')) && (await disk())['exports/my-first-scene.gif'] > 1000);
+  await page.getByRole('button', {name: 'Done', exact: true}).click();
+  // After a reload the browser asks again: edits wait in the browser and are written on reconnect.
+  await page.evaluate(() => sessionStorage.setItem('lockFolder', '1'));
+  await page.reload();
+  await page.waitForSelector('.block', {timeout: 60000});
+  await page.waitForSelector('.folder-chip.locked', {timeout: 10000}).catch(() => {});
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type(' (and while locked)');
+  await settle(700);
+  const lockedState = (await page.locator('.folder-chip.locked').count()) === 1 && !/while locked/.test((await disk())['My first scene.civet']);
+  await page.locator('.folder-chip.locked').click();
+  await page.waitForSelector('.folder-chip:not(.locked)', {timeout: 10000}).catch(() => {});
+  await settle(800);
+  check('a locked folder keeps edits in the browser and writes them on reconnect', lockedState && /while locked/.test((await disk())['My first scene.civet']));
+  await outside('From outside.tsx', null);
+  await page.waitForFunction(() => ![...document.querySelectorAll('.scene-select option')].some(o => o.textContent.trim() === 'From outside'), null, {timeout: 10000}).catch(() => {});
+  check('a file deleted outside the editor leaves the list', !(await mine()).includes('From outside'));
+  await page.locator('.folder-chip').click();
+  await page.getByRole('menuitem', {name: 'Stop saving to this folder'}).click();
+  await settle(400);
+  check('leaving the folder keeps the scenes in the browser and the files on disk', (await page.locator('.folder-chip').count()) === 0 && (await mine()).includes('My first scene') && 'My first scene.civet' in (await disk()));
 
   // New scenes sit next to each other; nothing is overwritten, and a reload comes back to the last one.
   await page.getByRole('button', {name: '+ New', exact: true}).click();

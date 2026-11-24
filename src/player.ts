@@ -7,6 +7,7 @@
  * Options in the URL hash override the embedded ones:
  * `#autoplay=0&loop=0&controls=0&t=1.5`.
  */
+import {setAssetUrls} from './runtime/assets';
 import type {EmbedData} from './runtime/embed';
 import {Engine} from './runtime/engine';
 
@@ -30,6 +31,7 @@ async function start(data: EmbedData) {
   const flag = (name: 'autoplay' | 'loop' | 'controls') => (hash.has(name) ? hash.get(name) !== '0' : data[name] !== false);
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  if (data.assets) setAssetUrls(data.assets);
   const engine = new Engine();
   engine.fps = data.fps || 30;
   const stage = document.getElementById('stage')!;
@@ -54,6 +56,14 @@ async function start(data: EmbedData) {
     showProgress();
   });
   engine.on('state', s => body.classList.toggle('paused', s.paused));
+  // Sound starts off, like every autoplaying video; a scene that has some gets a speaker button.
+  const speaker = document.getElementById('sound')!;
+  engine.on('sounds', count => body.classList.toggle('has-sound', count > 0));
+  speaker.addEventListener('click', () => {
+    engine.setAudible(!engine.audible);
+    body.classList.toggle('sound-on', engine.audible);
+    speaker.setAttribute('aria-pressed', engine.audible ? 'true' : 'false');
+  });
   engine.on('diagnostics', list => {
     if (list.length) console.error('[scene]', ...list.map(d => d.message));
   });
