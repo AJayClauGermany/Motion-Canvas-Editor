@@ -7,8 +7,14 @@
  * - an edit is written to `<name>.<civet|tsx>` a moment later;
  * - a file changed, added or removed by something else (another editor, an AI
  *   agent working on the files) is picked up within a couple of seconds;
- * - when both sides changed while the folder was out of reach, the file wins
+ * - when both sides changed since they last agreed (the folder was out of
+ *   reach, or something wrote the file while the author typed), the file wins
  *   and the editor's text is kept next to it as "… (unsaved copy)".
+ *
+ * A scene is `pending` from an edit until that edit is on disk, and `synced`
+ * is the fingerprint of the file's text when both sides last agreed. Both are
+ * kept by the host across reloads; together they tell an edit that still has
+ * to be written from a file that changed underneath it.
  *
  * The rules live in `sync`; the host applies them to the editor's state.
  */
@@ -63,7 +69,8 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
   let locked = false;
   /** What each file held when the editor last read or wrote it. */
   const known = new Map<string, {modified: number; text: string}>();
-  const queued = new Set<string>();
+  /** Files of scenes deleted in the editor while the folder was out of reach. */
+  const doomed = tombstones();
   let writeTimer: ReturnType<typeof setTimeout> | undefined;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   /** One file operation at a time. */
@@ -84,6 +91,8 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
     return false;
   };
 
+  const sameFile = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
   /** A free file name for a scene. */
   const fileFor = (view: SceneView, taken: Set<string>) => {
     const base = safeFileName(view.name);
@@ -97,16 +106,20 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
   const write = async (view: SceneView, disk: Set<string>) => {
     if (!folder) return;
     const taken = new Set([...disk, ...host.scenes().filter(s => s.slug !== view.slug && s.file).map(s => s.file!)]);
-    if (view.file) taken.delete(view.file);
+    if (view.file) for (const name of [...taken]) if (sameFile(name, view.file)) taken.delete(name);
     const file = fileFor(view, taken);
+    const renamed = !!view.file && view.file !== file;
+    // A change of letter case only: on macOS and Windows both names are the
+    // same file, so the old name has to go first or the new file would go with it.
+    if (renamed && sameFile(view.file!, file)) await folder.remove(view.file!);
     const modified = await folder.write(file, view.text);
     known.set(file, {modified, text: view.text});
     disk.add(file);
     // Renamed, or switched between Civet and TSX: the old file goes.
-    if (view.file && view.file !== file) {
-      await folder.remove(view.file);
-      known.delete(view.file);
-      disk.delete(view.file);
+    if (renamed) {
+      if (!sameFile(view.file!, file)) await folder.remove(view.file!);
+      known.delete(view.file!);
+      disk.delete(view.file!);
     }
     host.mark(view.slug, file, false, revisionOf(view.text));
   };
@@ -116,7 +129,20 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
     serial(async () => {
       if (!folder || locked) return;
       try {
-        const files = await folder.scenes();
+        let files = await folder.scenes();
+        // Scenes deleted in the editor while the folder could not be reached.
+        if (doomed.size) {
+          const removed = new Set<string>();
+          for (const name of doomed) {
+            if (host.scenes().some(s => s.file === name) || !files.some(f => f.name === name)) continue;
+            await folder.remove(name);
+            removed.add(name);
+          }
+          doomed.clear();
+          saveTombstones(doomed);
+          files = files.filter(f => !removed.has(f.name));
+        }
+
         const disk = new Set(files.map(f => f.name));
         const byFile = new Map(host.scenes().filter(s => s.file).map(s => [s.file!, s]));
         for (const f of files) {
@@ -125,31 +151,44 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
           if (view && before && before.modified === f.modified) continue;
           const {text, modified} = await folder.read(f.name);
           known.set(f.name, {modified, text});
+          const fingerprint = revisionOf(text);
           if (!view) {
+            const others = host.scenes();
             // The same text under a new name, and the old file gone: it was renamed.
-            const renamed = host.scenes().find(s => s.file && !disk.has(s.file) && !s.pending && s.text === text);
+            const renamed = others.find(s => s.file && !disk.has(s.file) && !s.pending && s.text === text);
+            // A scene the browser kept after the folder was left, and the folder still has: the same scene.
+            const twin = others.find(s => !s.file && s.text === text && s.language === sceneOfFile(f.name).language && s.name.toLowerCase() === sceneOfFile(f.name).name.toLowerCase());
             if (renamed) {
               known.delete(renamed.file!);
               host.moved(renamed.slug, f.name);
-            } else host.adopt(f.name, text);
+              host.mark(renamed.slug, f.name, false, fingerprint);
+            } else if (twin) {
+              host.mark(twin.slug, f.name, false, fingerprint);
+            } else {
+              host.adopt(f.name, text);
+              const adopted = host.scenes().find(s => s.file === f.name);
+              if (adopted) host.mark(adopted.slug, f.name, false, fingerprint);
+            }
             continue;
           }
           if (text === view.text) {
-            host.mark(view.slug, f.name, false, revisionOf(text));
+            host.mark(view.slug, f.name, false, fingerprint);
           } else if (!view.pending) {
             host.reload(view.slug, text);
-            host.mark(view.slug, f.name, false, revisionOf(text));
-          } else if (before ? before.text === text : view.synced === revisionOf(text)) {
+            host.mark(view.slug, f.name, false, fingerprint);
+          } else if (before ? before.text === text : view.synced === fingerprint) {
             // Only the editor changed: written below.
           } else {
-            // Both changed while the folder was out of reach. The file wins; the editor's text is kept beside it.
+            // Both changed since they last agreed. The file wins; the editor's text is kept beside it.
             const copy = fileFor({...view, name: `${view.name} (unsaved copy)`, file: undefined}, disk);
             const m = await folder.write(copy, view.text);
             known.set(copy, {modified: m, text: view.text});
             disk.add(copy);
             host.adopt(copy, view.text);
+            const kept = host.scenes().find(s => s.file === copy);
+            if (kept) host.mark(kept.slug, copy, false, revisionOf(view.text));
             host.reload(view.slug, text);
-            host.mark(view.slug, f.name, false, revisionOf(text));
+            host.mark(view.slug, f.name, false, fingerprint);
             host.notify(`"${f.name}" changed on disk while you edited it here. The file was loaded; your version is kept as "${copy}".`);
           }
         }
@@ -160,22 +199,6 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
             if (view.pending || view.slug === host.openSlug()) await write({...view, file: undefined}, disk);
             else host.drop(view.slug);
           } else if (!view.file || view.pending) await write(view, disk);
-        }
-      } catch (e) {
-        if (!lock(e)) throw e;
-      }
-    });
-
-  const flush = () =>
-    serial(async () => {
-      const slugs = [...queued];
-      queued.clear();
-      if (!folder || locked) return;
-      try {
-        const disk = new Set((await folder.scenes()).map(f => f.name));
-        for (const slug of slugs) {
-          const view = host.scenes().find(s => s.slug === slug);
-          if (view) await write(view, disk);
         }
       } catch (e) {
         if (!lock(e)) throw e;
@@ -208,6 +231,10 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
       locked = false;
       // What the editor knew about the files only holds for the folder it knew it about.
       if (!kept) known.clear();
+      if (switched || firstTime) {
+        doomed.clear();
+        saveTombstones(doomed);
+      }
       if (switched) {
         for (const view of host.scenes()) {
           if (!view.file) continue;
@@ -216,7 +243,7 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
         }
       } else if (firstTime) {
         // Marks left from a folder that was disconnected mean nothing here.
-        for (const view of host.scenes()) if (view.file) host.mark(view.slug, undefined, false);
+        for (const view of host.scenes()) if (view.file) host.mark(view.slug, undefined, !!view.pending);
       }
       host.status({name: next.name, locked: false});
       await sync();
@@ -232,34 +259,65 @@ export function createProject(host: ProjectHost, options: {pollMs?: number; onPo
     disconnect() {
       clearInterval(pollTimer);
       clearTimeout(writeTimer);
-      queued.clear();
       folder = null;
       locked = false;
       known.clear();
+      doomed.clear();
+      saveTombstones(doomed);
       for (const view of host.scenes()) if (view.file || view.pending) host.mark(view.slug, undefined, false);
       host.status(null);
     },
-    /** A scene was edited, renamed or created: write it soon. */
+    /**
+     * A scene was edited, renamed or created. It is `pending` from now until
+     * it is on disk, so a write that fails, or a tab closed before it ran, is
+     * made up for at the next sync instead of being taken for an old text.
+     */
     changed(slug: string) {
       if (!folder) return;
-      if (locked) {
-        const view = host.scenes().find(s => s.slug === slug);
-        if (view && !view.pending) host.mark(slug, view.file, true);
-        return;
-      }
-      queued.add(slug);
+      const view = host.scenes().find(s => s.slug === slug);
+      if (view && !view.pending) host.mark(slug, view.file, true);
+      if (locked) return;
       clearTimeout(writeTimer);
-      writeTimer = setTimeout(() => void flush().catch(() => {}), 300);
+      writeTimer = setTimeout(() => void sync().catch(() => {}), 300);
     },
-    /** A scene was deleted in the editor: delete its file. */
+    /** A scene was deleted in the editor: delete its file (when the folder is back, if it is out of reach). */
     removed(file: string | undefined) {
-      if (!folder || locked || !file) return Promise.resolve();
+      if (!folder || !file) return Promise.resolve();
       known.delete(file);
-      return serial(() => folder!.remove(file)).catch(e => void lock(e));
+      if (locked) {
+        doomed.add(file);
+        saveTombstones(doomed);
+        return Promise.resolve();
+      }
+      return serial(() => folder!.remove(file)).catch(e => {
+        if (lock(e)) {
+          doomed.add(file);
+          saveTombstones(doomed);
+        }
+      });
     },
     sync,
-    flush,
+    /** Write what is waiting now (the same pass as `sync`). */
+    flush: sync,
   };
+}
+
+const TOMBSTONES_KEY = 'mce.folder.deleted.v1';
+function tombstones(): Set<string> {
+  try {
+    const list = JSON.parse(localStorage.getItem(TOMBSTONES_KEY) ?? '[]');
+    return new Set(Array.isArray(list) ? list.filter(n => typeof n === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveTombstones(names: Set<string>) {
+  try {
+    if (names.size) localStorage.setItem(TOMBSTONES_KEY, JSON.stringify([...names]));
+    else localStorage.removeItem(TOMBSTONES_KEY);
+  } catch {
+    // Without storage the deletions are remembered for this visit only.
+  }
 }
 
 export type Project = ReturnType<typeof createProject>;

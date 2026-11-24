@@ -18,7 +18,7 @@ import {Folder, folderSupported, pickFolder, rememberedFolder, rememberFolder} f
 import {createProject, sceneOfFile} from './project';
 import {BLANK_MANIM, BLANK_NATIVE, BLANK_NATIVE_TSX, Example, examples} from './examples';
 import {createExporter, ExportFile, ExportRequest} from './export';
-import {fileBase, lastScene, loadScenes, nameFromFile, newSceneId, rememberScene, saveScenes, SceneRecord, sceneSlug, uniqueName} from './scenes';
+import {fileBase, lastScene, loadScenes, nameFromFile, newSceneId, rememberScene, saveScenes, SceneRecord, SCENES_KEY, sceneSlug, uniqueName} from './scenes';
 import {defaults, hashParam, loadSettings, qualityOf, saveSettings, Settings} from './settings';
 
 type Dialect = Pick<Settings, 'naming' | 'yieldStyle' | 'selfStyle'>;
@@ -244,6 +244,34 @@ export function createEditorState() {
     setMyScenes(sceneDocs());
     setDocsVersion(v => v + 1);
   };
+  // Another tab of the editor changed the list of scenes: take its additions,
+  // renames and deletions, so that saving the list here does not undo them.
+  window.addEventListener('storage', e => {
+    if (e.key !== SCENES_KEY) return;
+    const stored = loadScenes();
+    const ids = new Set(stored.map(r => r.id));
+    for (const r of stored) {
+      const mine = records.find(x => x.id === r.id);
+      if (!mine) {
+        records.push(r);
+        all.push(toDoc(r));
+      } else {
+        Object.assign(mine, r);
+        const at = all.findIndex(e => e.slug === sceneSlug(r.id));
+        if (at >= 0 && all[at].title !== r.name) all[at] = toDoc(mine);
+      }
+    }
+    for (const r of [...records]) {
+      // The scene open here stays, even if the other tab deleted it.
+      if (ids.has(r.id) || sceneSlug(r.id) === current.slug) continue;
+      records = records.filter(x => x !== r);
+      const at = all.findIndex(e => e.slug === sceneSlug(r.id));
+      if (at >= 0) all.splice(at, 1);
+    }
+    records.sort((a, b) => b.updated - a.updated);
+    setMyScenes(sceneDocs());
+    setDocsVersion(v => v + 1);
+  });
   const addScene = (...args: Parameters<typeof storeScene>): Example => {
     const doc = storeScene(...args);
     syncScenes();
@@ -440,8 +468,11 @@ export function createEditorState() {
     saveSettings(current.settings, {example: implied ? '' : current.slug});
   };
 
-  /** Replace the buffer from outside the code editor. */
-  const replaceSource = (code: string) => {
+  /** Whether the buffer was last replaced by another document (rather than a change to this one). */
+  let docSwitched = false;
+  /** Replace the buffer from outside the code editor. `switched`: with another document's text. */
+  const replaceSource = (code: string, switched = false) => {
+    if (switched) docSwitched = true;
     current.source = code;
     setSourceSignal(code);
     setSourceVersion(v => v + 1);
@@ -504,7 +535,7 @@ export function createEditorState() {
       current.provenance = buffer.provenance;
       setNotice([]);
       setAgentLines([]);
-      replaceSource(buffer.code);
+      replaceSource(buffer.code, true);
       persist();
       engine.togglePlayback(false);
       void run().then(() => {
@@ -604,6 +635,12 @@ export function createEditorState() {
         }
       }
       codeEditor?.insertLine(line);
+    },
+    /** For the code pane: whether the new buffer is another document, whose undo history must start empty. */
+    takeDocSwitch() {
+      const value = docSwitched;
+      docSwitched = false;
+      return value;
     },
     /** The code pane hands over its editor (null when it goes away). */
     attachCodeEditor(editor: {insertLine(text: string): void} | null) {

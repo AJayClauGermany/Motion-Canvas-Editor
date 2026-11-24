@@ -4,49 +4,58 @@ import type {Folder} from '../src/editor/folder';
 import {createProject, ProjectHost, sceneOfFile, SceneView} from '../src/editor/project';
 import {assetKey, resolveAsset, setAssetUrls, takeMissingAssets, usedAssets} from '../src/runtime/assets';
 
-/** A folder in memory, with a clock that moves on every write. */
-function fakeFolder(files: Record<string, string> = {}) {
+/** A folder in memory, with a clock that moves on every write. `insensitive`: names differing only in case are one file, as on macOS and Windows. */
+function fakeFolder(files: Record<string, string> = {}, insensitive = false) {
   let clock = 1000;
-  const disk = new Map(Object.entries(files).map(([name, text]) => [name, {text, modified: clock++}]));
-  let denied = false;
+  const key = (name: string) => (insensitive ? name.toLowerCase() : name);
+  const disk = new Map(Object.entries(files).map(([name, text]) => [key(name), {name, text, modified: clock++}]));
+  let denied: string | null = null;
   const check = () => {
-    if (denied) throw Object.assign(new Error('no'), {name: 'NotAllowedError'});
+    if (denied) throw Object.assign(new Error('no'), {name: denied});
+  };
+  const put = (name: string, text: string) => {
+    // An existing file keeps the spelling it was created with.
+    disk.set(key(name), {name: disk.get(key(name))?.name ?? name, text, modified: clock++});
   };
   const folder = {
     name: 'project',
     async scenes() {
       check();
-      return [...disk].filter(([n]) => /\.(civet|tsx)$/.test(n)).map(([name, f]) => ({name, modified: f.modified, size: f.text.length}));
+      return [...disk.values()].filter(f => /\.(civet|tsx)$/i.test(f.name)).map(f => ({name: f.name, modified: f.modified, size: f.text.length}));
     },
     async read(name: string) {
       check();
-      return {...disk.get(name)!};
+      const f = disk.get(key(name))!;
+      return {text: f.text, modified: f.modified};
     },
     async write(name: string, text: string) {
       check();
-      disk.set(name, {text, modified: clock++});
-      return disk.get(name)!.modified;
+      put(name, text);
+      return disk.get(key(name))!.modified;
     },
     async remove(name: string) {
       check();
-      disk.delete(name);
+      disk.delete(key(name));
     },
-    async same() {
-      return false;
+    async same(other: unknown) {
+      return other === folder;
     },
   } as unknown as Folder;
   return {
     folder,
-    disk,
     /** Something other than the editor writes a file. */
     outside(name: string, text: string | null) {
-      if (text === null) disk.delete(name);
-      else disk.set(name, {text, modified: clock++});
+      if (text === null) disk.delete(key(name));
+      else put(name, text);
+    },
+    /** Make every file operation fail with an error of this name (`null`: work again). */
+    fail(name: string | null) {
+      denied = name;
     },
     deny(value: boolean) {
-      denied = value;
+      denied = value ? 'NotAllowedError' : null;
     },
-    files: () => Object.fromEntries([...disk].map(([n, f]) => [n, f.text])),
+    files: () => Object.fromEntries([...disk.values()].map(f => [f.name, f.text])),
   };
 }
 
@@ -242,6 +251,119 @@ describe('project folder', () => {
     expect(first.files()).toEqual({'Intro.civet': 'one'});
     expect(second.files()).toEqual({'Other.civet': 'other'});
     expect(ed.all().map(s => s.file)).toEqual(['Other.civet']);
+    project.disconnect();
+  });
+
+  test('an edit that never reached the disk is written at the next chance, not replaced by the old file', async () => {
+    // The tab is closed before the write runs.
+    const ed = fakeEditor([scene('a', 'Intro', 'one')]);
+    const f = fakeFolder();
+    const first = createProject(ed.host, {pollMs: 1e9});
+    await first.connect(f.folder, true);
+    ed.edit('a', {text: 'two, typed just before closing'});
+    first.changed('a');
+    expect(ed.get('a')!.pending).toBe(true);
+    const second = createProject(ed.host, {pollMs: 1e9});
+    await second.connect(f.folder, false);
+    expect(ed.get('a')!.text).toBe('two, typed just before closing');
+    expect(f.files()).toEqual({'Intro.civet': 'two, typed just before closing'});
+
+    // A write fails for a reason that is not a permission (the drive went away).
+    f.fail('NotFoundError');
+    ed.edit('a', {text: 'three'});
+    second.changed('a');
+    await second.flush().catch(() => {});
+    expect(ed.get('a')!.pending).toBe(true);
+    f.fail(null);
+    const third = createProject(ed.host, {pollMs: 1e9});
+    await third.connect(f.folder, false);
+    expect(ed.get('a')!.text).toBe('three');
+    expect(f.files()).toEqual({'Intro.civet': 'three'});
+    first.disconnect = second.disconnect = () => {};
+    third.disconnect();
+  });
+
+  test('a file changed outside while the author types is not overwritten', async () => {
+    const ed = fakeEditor([scene('a', 'Intro', 'one')]);
+    const f = fakeFolder();
+    const project = createProject(ed.host, {pollMs: 1e9});
+    await project.connect(f.folder, true);
+    f.outside('Intro.civet', 'rewritten by an agent');
+    ed.edit('a', {text: 'one, and typed'});
+    project.changed('a');
+    await project.flush();
+    expect(f.files()['Intro.civet']).toBe('rewritten by an agent');
+    expect(f.files()['Intro (unsaved copy).civet']).toBe('one, and typed');
+    expect(ed.get('a')!.text).toBe('rewritten by an agent');
+    project.disconnect();
+  });
+
+  test('a rename that only changes the case keeps the file where names are case-insensitive', async () => {
+    for (const insensitive of [true, false]) {
+      const ed = fakeEditor([scene('a', 'intro', 'one')]);
+      const f = fakeFolder({'Other.TSX': 'x'}, insensitive);
+      const project = createProject(ed.host, {pollMs: 1e9});
+      await project.connect(f.folder, true);
+      ed.edit('a', {name: 'Intro'});
+      project.changed('a');
+      await project.flush();
+      expect(f.files()['Intro.civet']).toBe('one');
+      expect(Object.keys(f.files()).filter(n => /intro/i.test(n))).toEqual(['Intro.civet']);
+      // An adopted file whose extension is spelled in capitals survives its first edit.
+      const other = ed.all().find(s => s.file === 'Other.TSX')!;
+      ed.edit(other.slug, {text: 'y'});
+      project.changed(other.slug);
+      await project.flush();
+      expect(Object.entries(f.files()).filter(([n]) => /^other\./i.test(n))).toEqual([['Other.tsx', 'y']]);
+      await project.sync();
+      expect(ed.get('a')).toBeDefined();
+      expect(ed.get(other.slug)).toBeDefined();
+      project.disconnect();
+    }
+  });
+
+  test('a scene that came from the folder is not a conflict when it is edited while the folder is locked', async () => {
+    const ed = fakeEditor();
+    const f = fakeFolder({'Intro.civet': 'one'});
+    const project = createProject(ed.host, {pollMs: 1e9});
+    await project.connect(f.folder, true);
+    const adopted = ed.all()[0];
+    ed.setOpen(adopted.slug);
+    const reloaded = createProject(ed.host, {pollMs: 1e9});
+    reloaded.hold(f.folder);
+    ed.edit(adopted.slug, {text: 'one, edited while locked'});
+    reloaded.changed(adopted.slug);
+    await reloaded.connect(f.folder, false);
+    expect(f.files()).toEqual({'Intro.civet': 'one, edited while locked'});
+    expect(ed.log.some(l => l.startsWith('notify'))).toBe(false);
+    project.disconnect = () => {};
+    reloaded.disconnect();
+  });
+
+  test('leaving a folder and picking it again does not duplicate the scenes', async () => {
+    const ed = fakeEditor([scene('a', 'Intro', 'one'), scene('b', 'Second', 'two')]);
+    const f = fakeFolder();
+    const project = createProject(ed.host, {pollMs: 1e9});
+    await project.connect(f.folder, true);
+    project.disconnect();
+    await project.connect(f.folder, true);
+    expect(f.files()).toEqual({'Intro.civet': 'one', 'Second.civet': 'two'});
+    expect(ed.all().map(s => s.file).sort()).toEqual(['Intro.civet', 'Second.civet']);
+    project.disconnect();
+  });
+
+  test('a scene deleted while the folder is locked loses its file on reconnect', async () => {
+    const ed = fakeEditor([scene('a', 'Intro', 'one'), scene('b', 'Second', 'two')]);
+    const f = fakeFolder();
+    const project = createProject(ed.host, {pollMs: 1e9});
+    await project.connect(f.folder, true);
+    project.hold(f.folder);
+    const file = ed.get('b')!.file;
+    ed.host.drop('b');
+    await project.removed(file);
+    await project.connect(f.folder, false);
+    expect(f.files()).toEqual({'Intro.civet': 'one'});
+    expect(ed.all().map(s => s.slug)).toEqual(['a']);
     project.disconnect();
   });
 

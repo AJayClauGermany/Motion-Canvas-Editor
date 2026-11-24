@@ -21,7 +21,9 @@ const check = (name, ok, detail = '') => {
 
 (async () => {
   const browser = await chromium.launch();
-  const page = await browser.newPage({viewport: {width: 1440, height: 900}, deviceScaleFactor: Number(process.env.DPR || 1)});
+  // A context of its own, so a second tab can share its storage.
+  const context = await browser.newContext({viewport: {width: 1440, height: 900}, deviceScaleFactor: Number(process.env.DPR || 1)});
+  const page = await context.newPage();
   const problems = [];
   page.on('console', m => {
     if (!['error', 'warning'].includes(m.type())) return;
@@ -238,6 +240,11 @@ const check = (name, ok, detail = '') => {
   await page.getByRole('button', {name: '+ New', exact: true}).click();
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 2, null, {timeout: 10000}).catch(() => {});
   check('New adds a second scene', (await sceneName()) === 'Untitled' && (await page.locator('.scene-select optgroup').first().locator('option').count()) === 2);
+  // Undo belongs to a scene: it must not bring the previous scene's text into this one.
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+z');
+  await settle(500);
+  check('undo does not cross from one scene into another', !/FadeOut title/.test(await page.locator('.cm-content').first().innerText()) && (await page.locator('.block').count()) === 2);
   await page.locator('.scene-select').selectOption({label: 'My first scene'});
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 10000}).catch(() => {});
   check('the first scene kept its edits', /@play FadeOut title/.test(await page.locator('.cm-content').first().innerText()));
@@ -250,6 +257,29 @@ const check = (name, ok, detail = '') => {
   await page.getByRole('menuitem', {name: /for good/}).click();
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 2, null, {timeout: 10000}).catch(() => {});
   check('deleting a scene opens the next one', (await sceneName()) === 'Untitled' && (await page.locator('.scene-select optgroup').first().locator('option').count()) === 1);
+  {
+    // Two tabs share the list of scenes: neither undoes what the other did.
+    const count = () => page.locator('.scene-select optgroup').first().locator('option').count();
+    const other = await context.newPage();
+    await other.goto(base + '/');
+    await other.waitForSelector('.block', {timeout: 60000});
+    await other.getByRole('button', {name: '+ New', exact: true}).click();
+    await other.locator('.file-tab .scene-name').fill('From the other tab');
+    await other.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelectorAll('.scene-select optgroup')[0].querySelectorAll('option').length === 2, null, {timeout: 5000}).catch(() => {});
+    const seen = (await count()) === 2;
+    await page.locator('.file-tab .scene-name').fill('Kept');
+    await page.keyboard.press('Enter');
+    await settle(300);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('mce.scenes.v1')).map(r => r.name).sort());
+    check('a scene made in another tab appears here and survives a save from this tab', seen && stored.join(',') === 'From the other tab,Kept', stored.join(','));
+    await other.getByRole('button', {name: 'More ways to start a scene'}).click();
+    await other.getByRole('menuitem', {name: 'Delete this scene…'}).click();
+    await other.getByRole('menuitem', {name: /for good/}).click();
+    await page.waitForFunction(() => document.querySelectorAll('.scene-select optgroup')[0].querySelectorAll('option').length === 1, null, {timeout: 5000}).catch(() => {});
+    check('a scene deleted in another tab leaves the list here', (await count()) === 1);
+    await other.close();
+  }
 
   await page.goto(base + '/#example=square-to-circle');
   await page.reload();

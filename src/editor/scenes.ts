@@ -17,7 +17,9 @@ export interface SceneRecord {
   synced?: string;
 }
 
-const INDEX_KEY = 'mce.scenes.v1';
+/** The list of scenes in localStorage; another tab changing it raises a `storage` event with this key. */
+export const SCENES_KEY = 'mce.scenes.v1';
+const INDEX_KEY = SCENES_KEY;
 const LAST_KEY = 'mce.last.v1';
 
 export const sceneSlug = (id: string) => `my-${id}`;

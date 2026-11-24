@@ -212,31 +212,55 @@ export function createMcpServer(link: EditorLink): McpServer {
 
   // ------------------------------------------------ sharing the document
 
-  /** The document as this agent last saw it, to tell it what changed since. */
+  /**
+   * The text of the open document as this agent knows it: what a tool last
+   * showed it (in full, or as a diff on top of what it had), or what it wrote
+   * itself. Null until it has been shown a scene.
+   */
   let seen: {slug: string; revision: string; source: string} | null = null;
 
+  interface CatchUp {
+    state: EditorSnapshot;
+    /** What to tell the agent before anything else; empty when nothing changed. */
+    note: string;
+    /** `first`: the agent has not been shown this scene. `same`: it knows exactly this text. `edited`: the text changed. `switched`: another scene is open. */
+    kind: 'first' | 'same' | 'edited' | 'switched';
+    /**
+     * Call once the answer carrying `note` is certain to reach the agent.
+     * `full`: the answer shows the whole source. Without that, a diff brings
+     * the agent up to date only if it knew the text the diff starts from.
+     */
+    shown(full: boolean): void;
+  }
+
   /**
-   * Read the open document and say what changed in the editor since this
-   * agent last saw it: the user typed, or opened another scene. `fresh` means
-   * the agent has been shown exactly this text.
+   * Read the open document and work out what changed in the editor since
+   * this agent last saw it: the user typed, or opened another scene. Nothing
+   * is recorded until `shown` is called, so a tool that fails after this, or
+   * one that never shows the text, leaves the agent as uninformed as it was.
    */
-  const catchUp = async (as?: Language): Promise<{state: EditorSnapshot; note: string; fresh: boolean; first: boolean}> => {
+  const catchUp = async (as?: Language): Promise<CatchUp> => {
     const state = await link.call('state', {includeSource: true, as});
-    const before = seen;
-    seen = {slug: state.document.slug, revision: state.revision, source: state.source ?? ''};
-    if (!before) return {state, note: '', fresh: false, first: true};
-    if (before.slug !== state.document.slug) {
-      return {state, fresh: false, first: false, note: `Since you last looked, another scene was opened in the editor: ${state.document.title} (${state.document.slug}).`};
-    }
-    if (before.revision !== state.revision) {
-      const diff = formatDiff(before.source, state.source ?? '');
-      return {state, fresh: false, first: false, note: ['Since you last read it, the scene was edited in the editor (by the user, unless another agent is connected). The changes:', '```diff', diff, '```'].join('\n')};
-    }
-    return {state, note: '', fresh: true, first: false};
+    const now = {slug: state.document.slug, revision: state.revision, source: state.source ?? ''};
+    const kind: CatchUp['kind'] = !seen ? 'first' : seen.slug !== now.slug ? 'switched' : seen.revision !== now.revision ? 'edited' : 'same';
+    const note =
+      kind === 'switched'
+        ? `Since you last looked, another scene was opened in the editor: ${state.document.title} (${state.document.slug}). You have not been shown it: read it with get_editor_state.`
+        : kind === 'edited'
+          ? ['Since you last read it, the scene was edited in the editor (by the user, unless another agent is connected). The changes:', '```diff', formatDiff(seen!.source, now.source), '```'].join('\n')
+          : '';
+    return {
+      state,
+      note,
+      kind,
+      shown(full) {
+        if (full || kind === 'same' || kind === 'edited') seen = now;
+      },
+    };
   };
-  /** The agent's own change: what it now knows the document to be. */
+  /** The agent's own change to a text it knew: it knows the result too. */
   const sawEdit = (r: EditResult) => {
-    if (seen && r.source !== undefined) seen = {...seen, revision: r.revision, source: r.source};
+    if (seen && r.applied && r.source !== undefined) seen = {...seen, revision: r.revision, source: r.source};
   };
   const withNote = (note: string, body: string) => (note ? `${note}\n\n${body}` : body);
 
@@ -364,8 +388,11 @@ export function createMcpServer(link: EditorLink): McpServer {
       const notes: string[] = [];
       if (source === undefined) {
         try {
-          const {state, note} = await catchUp();
-          if (note) notes.push(note);
+          const c = await catchUp();
+          if (c.note) notes.push(c.note);
+          // Everything below ends in a text answer that includes the note.
+          c.shown(false);
+          const state = c.state;
           source = state.source ?? '';
           target = state.document.language;
         } catch (e) {
@@ -416,7 +443,9 @@ export function createMcpServer(link: EditorLink): McpServer {
     async ({include_source, as}) =>
       viaEditor(
         () => catchUp(as),
-        ({state: s, note}) => {
+        c => {
+          const {state: s, note} = c;
+          c.shown(include_source !== false);
           const d = s.document;
           const others = s.myScenes.filter(m => m.slug !== d.slug);
           const lines = [
@@ -462,18 +491,18 @@ export function createMcpServer(link: EditorLink): McpServer {
     async ({edits, base_revision, summary}) =>
       viaEditor(
         async () => {
-          const before = seen;
-          const {state, note} = await catchUp();
+          const c = await catchUp();
           // Edits are written against a text; never apply them to a scene the agent has not read.
-          if (before && before.slug !== state.document.slug) return {note, r: null};
+          if (c.kind === 'switched') return {note: c.note, r: null};
           const r = await link.call('editSource', {edits, baseRevision: base_revision, summary}, 10 * 60_000);
+          c.shown(false);
           sawEdit(r);
-          return {note, r};
+          return {note: c.note, r};
         },
         ({note, r}) =>
           r
             ? {...text(withNote(note, formatEdit(r))), isError: !r.applied}
-            : failure(`${note} Nothing was changed: your edits were written for the scene that was open before. Read this one with get_editor_state first.`),
+            : failure(`${note} Nothing was changed: your edits were written for the scene that was open before.`),
       ),
   );
 
@@ -493,20 +522,25 @@ export function createMcpServer(link: EditorLink): McpServer {
     async ({code, language, base_revision, summary}) =>
       viaEditor(
         async () => {
-          const {state, note, fresh, first} = await catchUp();
+          const c = await catchUp();
+          const {state, note} = c;
           const d = state.document;
           const usersWork = d.kind === 'scene' || d.dirty;
-          if (!fresh && usersWork && base_revision !== state.revision) return {note, first, state, r: null};
+          // Replacing everything is only safe on a text the agent knows.
+          if (c.kind !== 'same' && usersWork && base_revision !== state.revision) return {c, note, state, r: null};
           const r = await link.call('setSource', {code, language: language ?? 'auto', baseRevision: base_revision, summary}, 10 * 60_000);
-          sawEdit(r);
-          return {note, first, state, r};
+          // It wrote the whole text; otherwise the answer carries the note (and the current text on a conflict).
+          if (r.applied && r.source !== undefined) seen = {slug: d.slug, revision: r.revision, source: r.source};
+          else c.shown(r.source !== undefined);
+          return {c, note, state, r};
         },
-        ({note, first, state, r}) =>
+        ({c, note, state, r}) =>
           r
             ? {...text(withNote(note, formatEdit(r))), isError: !r.applied}
             : failure(
                 [
-                  first ? `You have not read the open scene (${state.document.title}) yet, and write_scene would replace all of it.` : note,
+                  // The answer below shows the whole scene: from here on the agent knows it.
+                  (c.shown(true), c.kind === 'edited' ? note : `You have not been shown the open scene (${state.document.title}), and write_scene would replace all of it.`),
                   'Nothing was changed. The scene as it is now:',
                   '```' + state.document.language,
                   numbered(state.source ?? ''),
@@ -538,7 +572,7 @@ export function createMcpServer(link: EditorLink): McpServer {
           const s = await link.call('open', {example, scene, code, language: language ?? 'auto', name}, 60_000);
           // New code is the agent's own text; an example or a scene of the user's has yet to be read.
           seen = null;
-          if (code !== undefined && !example && !scene) await catchUp();
+          if (code !== undefined && !example && !scene) (await catchUp()).shown(true);
           return s;
         },
         s => text([`Opened ${s.document.title} (${s.document.slug}, ${s.document.language}, revision ${s.revision}).`, formatDiagnostics(s.diagnostics), formatSteps(s.steps)].join('\n')),
@@ -564,8 +598,10 @@ export function createMcpServer(link: EditorLink): McpServer {
     async ({code, language, times, count, width}) =>
       viaEditor(
         async () => {
-          const note = code === undefined ? (await catchUp()).note : '';
-          return {note, r: await link.call('render', {code, language: language ?? 'auto', times, count, width}, 120_000)};
+          const c = code === undefined ? await catchUp() : null;
+          const r = await link.call('render', {code, language: language ?? 'auto', times, count, width}, 120_000);
+          c?.shown(false);
+          return {note: c?.note ?? '', r};
         },
         ({note, r}) => {
           const caption = [
@@ -597,8 +633,10 @@ export function createMcpServer(link: EditorLink): McpServer {
     async ({time, code, language}) =>
       viaEditor(
         async () => {
-          const note = code === undefined ? (await catchUp()).note : '';
-          return {note, r: await link.call('inspect', {time, code, language: language ?? 'auto'}, 60_000)};
+          const c = code === undefined ? await catchUp() : null;
+          const r = await link.call('inspect', {time, code, language: language ?? 'auto'}, 60_000);
+          c?.shown(false);
+          return {note: c?.note ?? '', r};
         },
         ({note, r}) => {
           const round = (n: number) => Math.round(n * 100) / 100;
@@ -643,8 +681,10 @@ export function createMcpServer(link: EditorLink): McpServer {
     async ({format, path, time, height, fps, width}) =>
       viaEditor(
         async () => {
-          const {note} = await catchUp();
-          return {note, r: await link.call('export', {format: format ?? 'video', height, fps, width, time, saveTo: saveTarget(path)}, 30 * 60_000)};
+          const c = await catchUp();
+          const r = await link.call('export', {format: format ?? 'video', height, fps, width, time, saveTo: saveTarget(path)}, 30 * 60_000);
+          c.shown(false);
+          return {note: c.note, r};
         },
         ({note, r}) => ({...text(withNote(note, formatExport(r))), isError: !r.path}),
       ),

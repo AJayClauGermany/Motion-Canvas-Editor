@@ -107,8 +107,13 @@ my-project/
   files reload, new files appear in the scene list, deleted files leave it.
 - After a reload the browser asks before it lets the page use the folder
   again: click **Reconnect**. Until then edits are kept in the browser and
-  written afterwards. If a file changed on disk in the meantime as well, the
-  file wins and your version is saved next to it as "… (unsaved copy)".
+  written afterwards.
+- If a file changed on disk and in the editor since the two last agreed (while
+  the folder was locked, or because something wrote the file while you were
+  typing), the file wins and your version is saved next to it as
+  "… (unsaved copy)". Nothing is merged.
+- Two tabs of the editor share the list of scenes. Editing the same scene in
+  both at once is not coordinated: the last one to type wins.
 - The folder chip in the top bar switches to another folder or stops using
   one; the scenes then stay in the browser and the files stay on disk.
 

@@ -33,6 +33,8 @@ export const isSound = (name: string, type = '') => type.startsWith('audio/') ||
 const TYPES: Record<string, string> = {mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', weba: 'audio/webm', webm: 'audio/webm'};
 export const soundType = (name: string) => TYPES[name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
 
+const UNSAVED_KEY = 'unsaved-clips';
+
 export function createAssetStore(onChange: (urls: Record<string, string>) => void) {
   const [list, setList] = createSignal<Asset[]>([]);
   let current: Asset[] = [];
@@ -106,7 +108,13 @@ export function createAssetStore(onChange: (urls: Record<string, string>) => voi
       if (!isSound(clean, data.type)) throw new Error(`"${name}" is not a sound file. Supported: mp3, wav, ogg, m4a, aac, flac, opus, webm.`);
       const blob = data.type ? data : new Blob([data], {type: soundType(clean)});
       if (folder) await folder.writeAsset(clean, blob);
-      else await idbSet('assets', clean, blob);
+      else {
+        await idbSet('assets', clean, blob);
+        // Not in any folder yet: it has to be taken along when one is (re)connected.
+        const unsaved = new Set((await idbGet<string[]>('kv', UNSAVED_KEY)) ?? []);
+        unsaved.add(clean);
+        await idbSet('kv', UNSAVED_KEY, [...unsaved]);
+      }
       // A replaced file can keep its size; make sure it is read again.
       current = current.filter(a => a.name !== clean || (URL.revokeObjectURL(a.url), false));
       await refresh();
@@ -125,14 +133,18 @@ export function createAssetStore(onChange: (urls: Record<string, string>) => voi
     async setFolder(next: Folder | null, bringClips = false): Promise<void> {
       if (next === folder) return refresh();
       try {
-        // Only when the author just picked the folder: on a reconnect the
-        // browser's clips are a copy, and a clip deleted on disk must stay deleted.
-        if (next && bringClips) {
+        if (next) {
+          // A freshly picked folder gets every clip the browser has. On a
+          // reconnect the browser's clips are a copy of the folder's, and a
+          // clip deleted on disk must stay deleted: only clips added while the
+          // folder was out of reach go in.
+          const unsaved = (await idbGet<string[]>('kv', UNSAVED_KEY)) ?? [];
           const there = new Set((await next.assets()).map(a => a.name));
-          for (const name of await idbKeys('assets')) {
+          for (const name of bringClips ? await idbKeys('assets') : unsaved) {
             const blob = await idbGet<Blob>('assets', name);
             if (blob && !there.has(name)) await next.writeAsset(name, blob);
           }
+          await idbDelete('kv', UNSAVED_KEY);
         }
       } catch {
         // The clips stay where they were.

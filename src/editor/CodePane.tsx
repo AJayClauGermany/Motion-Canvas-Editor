@@ -35,7 +35,10 @@ function SourceEditor() {
   // The buffer was replaced from outside (example switch, dialect conversion).
   createEffect(
     () => ed.sourceVersion(),
-    () => editor?.setDoc(ed.getSource()),
+    () => {
+      if (ed.takeDocSwitch()) editor?.openDoc(ed.getSource());
+      else editor?.setDoc(ed.getSource());
+    },
   );
   createEffect(
     () => ed.diagnostics(),

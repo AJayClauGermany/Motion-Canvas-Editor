@@ -110,7 +110,13 @@ export interface CodeEditorOptions {
 
 export interface CodeEditor {
   view: EditorView;
+  /** Replace the text of the open document: an undoable change. */
   setDoc(doc: string): void;
+  /**
+   * Show another document: nothing of the previous one stays in the undo
+   * history, so Ctrl+Z cannot bring its text into this one.
+   */
+  openDoc(doc: string): void;
   setDiagnostics(list: Diagnostic[]): void;
   setPlayingLine(line: number | null): void;
   /** Add `text` as a line of its own after the cursor's line, at that line's indentation. */
@@ -165,10 +171,10 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
   let silent = false;
   const readOnly = new Compartment();
   const language = new Compartment();
-  const view = new EditorView({
-    parent,
-    state: EditorState.create({
-      doc: options.doc,
+  let currentLanguage = options.language;
+  const makeState = (doc: string) =>
+    EditorState.create({
+      doc,
       extensions: [
         keymap.of([
           {
@@ -185,7 +191,7 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
         basicSetup,
         indentUnit.of('  '),
         EditorState.tabSize.of(2),
-        language.of(languages[options.language]()),
+        language.of(languages[currentLanguage]()),
         syntaxHighlighting(highlight),
         theme,
         playingLine,
@@ -204,11 +210,18 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
           }
         }),
       ],
-    }),
-  });
+    });
+  const view = new EditorView({parent, state: makeState(options.doc)});
 
   return {
     view,
+    openDoc(doc) {
+      silent = true;
+      view.setState(makeState(doc));
+      silent = false;
+      view.scrollDOM.scrollTop = 0;
+      view.scrollDOM.scrollLeft = 0;
+    },
     setDoc(doc) {
       if (doc === view.state.doc.toString()) return;
       silent = true;
@@ -270,6 +283,7 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
       silent = false;
     },
     setLanguage(name) {
+      currentLanguage = name;
       view.dispatch({effects: language.reconfigure(languages[name]())});
     },
     destroy() {
