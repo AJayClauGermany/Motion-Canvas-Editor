@@ -68,14 +68,32 @@ export function createAssetStore(onChange: (urls: Record<string, string>) => voi
       next.push({name: f.name, size: f.blob.size, type: f.blob.type || soundType(f.name), url: URL.createObjectURL(f.blob), modified: f.modified});
     }
     if (!changed) return;
+    const gone: string[] = [];
     for (const old of current) {
       if (next.includes(old)) continue;
       URL.revokeObjectURL(old.url);
-      if (!next.some(a => a.name === old.name)) blobs.delete(old.name);
+      if (!next.some(a => a.name === old.name)) {
+        blobs.delete(old.name);
+        gone.push(old.name);
+      }
     }
+    const fresh = next.filter(a => !current.includes(a));
     current = next;
     setList(next);
     onChange(urls());
+    // The browser keeps a copy of the folder's clips, so scenes still sound
+    // while the folder waits to be reconnected after a reload.
+    if (folder) {
+      try {
+        for (const name of gone) await idbDelete('assets', name);
+        for (const a of fresh) {
+          const blob = blobs.get(a.name);
+          if (blob) await idbSet('assets', a.name, new Blob([await blob.arrayBuffer()], {type: a.type}));
+        }
+      } catch {
+        // Only the copy is missing.
+      }
+    }
   };
 
   return {
@@ -100,21 +118,21 @@ export function createAssetStore(onChange: (urls: Record<string, string>) => voi
       await refresh();
     },
     /**
-     * Follow the project folder. Connecting moves the browser's clips into
-     * the folder; disconnecting keeps a copy of the folder's clips here.
+     * Follow the project folder (null: back to the browser). Connecting
+     * copies the browser's clips into the folder; from then on the folder is
+     * what counts, and the browser keeps a copy (see `refresh`).
      */
-    async setFolder(next: Folder | null): Promise<void> {
+    async setFolder(next: Folder | null, bringClips = false): Promise<void> {
       if (next === folder) return refresh();
       try {
-        if (next) {
+        // Only when the author just picked the folder: on a reconnect the
+        // browser's clips are a copy, and a clip deleted on disk must stay deleted.
+        if (next && bringClips) {
           const there = new Set((await next.assets()).map(a => a.name));
           for (const name of await idbKeys('assets')) {
             const blob = await idbGet<Blob>('assets', name);
             if (blob && !there.has(name)) await next.writeAsset(name, blob);
-            await idbDelete('assets', name);
           }
-        } else {
-          for (const [name, blob] of blobs) await idbSet('assets', name, blob);
         }
       } catch {
         // The clips stay where they were.

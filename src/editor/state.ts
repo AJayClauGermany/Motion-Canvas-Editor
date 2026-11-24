@@ -880,7 +880,7 @@ export function createEditorState() {
   const useFolder = async (folder: Folder, fresh: boolean) => {
     try {
       await project.connect(folder, fresh);
-      await assets.setFolder(folder);
+      await assets.setFolder(folder, fresh);
     } catch (e) {
       setNotice([`The folder "${folder.name}" could not be used: ${(e as Error).message}`]);
     }
