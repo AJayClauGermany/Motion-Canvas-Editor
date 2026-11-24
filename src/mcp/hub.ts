@@ -7,6 +7,10 @@
  *   GET  /editor   WebSocket the editor page connects to
  *   POST /call     editor calls forwarded by another MCP server process
  *
+ * A call can produce a file (an export). The page sends its bytes as binary
+ * frames before the result, and the hub writes them to the path the caller
+ * asked for (`saveTo`): the file never travels through JSON.
+ *
  * Only local clients can reach it: it binds to 127.0.0.1, checks the Host
  * header (DNS rebinding), refuses browser requests from other origins, and
  * accepts editor sockets only from the editor's own origins.
@@ -14,6 +18,8 @@
 import {WebStandardStreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import type {Server, ServerWebSocket} from 'bun';
+import {mkdirSync, writeFileSync} from 'node:fs';
+import {basename, dirname, join} from 'node:path';
 import {
   CallMessage,
   DEFAULT_EDITOR_ORIGINS,
@@ -22,6 +28,7 @@ import {
   HUB_HEADER,
   PageMessage,
   PROTOCOL_VERSION,
+  SaveTarget,
 } from './protocol';
 import {EditorLink, EditorUnavailable, NO_EDITOR, SERVER_NAME, SERVER_VERSION} from './server';
 
@@ -42,6 +49,10 @@ interface Pending {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   socket: number;
+  /** Where to write the file the page sends with its answer. */
+  saveTo?: SaveTarget;
+  /** Pieces of that file, in order. */
+  chunks?: Buffer[];
 }
 
 export interface HubOptions {
@@ -115,9 +126,35 @@ export function startHub(options: HubOptions): Hub {
         pending.delete(id);
         reject(new Error(`The editor did not answer "${method}" within ${Math.round(timeoutMs / 1000)} s. If its window is minimised or the tab is in the background, bring it to the front.`));
       }, timeoutMs);
-      pending.set(id, {resolve, reject, timer, socket: editor.ws.data.id});
+      const saveTo = (params as {saveTo?: SaveTarget} | null)?.saveTo;
+      pending.set(id, {resolve, reject, timer, socket: editor.ws.data.id, saveTo});
       editor.ws.send(JSON.stringify(message));
     });
+  };
+
+  /** Write the file a call produced; the result says where, or why not. */
+  const saveFile = (p: Pending, result: any) => {
+    const data = Buffer.concat(p.chunks ?? []);
+    const report = {...result, bytes: data.byteLength};
+    if (!p.saveTo) return {...report, saveError: 'No place to save the file was given.'};
+    // The editor knows the real format (MP4, or WebM where H.264 cannot be encoded).
+    const extension = String(result?.extension ?? '').replace(/[^a-z0-9]/gi, '');
+    const path = p.saveTo.file
+      ? extension
+        ? p.saveTo.file.replace(/\.[a-z0-9]+$/i, '') + `.${extension}`
+        : p.saveTo.file
+      : join(p.saveTo.dir ?? '.', String(result?.fileName ?? 'export').replace(/[\\/]/g, '-'));
+    try {
+      mkdirSync(dirname(path), {recursive: true});
+      writeFileSync(path, data);
+      log(`saved ${path} (${data.byteLength} bytes)`);
+      // The page named the file before it knew where it would go.
+      const fileName = basename(path);
+      const snippet = typeof result?.snippet === 'string' && result.fileName ? result.snippet.split(`"${result.fileName}"`).join(`"${fileName}"`) : result?.snippet;
+      return {...report, fileName, snippet, path};
+    } catch (e) {
+      return {...report, saveError: `Could not write ${path}: ${(e as Error).message}`};
+    }
   };
 
   const handleMcp = async (req: Request): Promise<Response> => {
@@ -196,6 +233,12 @@ export function startHub(options: HubOptions): Hub {
         for (const w of [...waiters]) w();
       },
       message(ws, raw) {
+        if (typeof raw !== 'string') {
+          // A piece of a file: the call's id, then bytes.
+          const p = raw.byteLength >= 4 ? pending.get(raw.readUInt32LE(0)) : undefined;
+          if (p && p.socket === ws.data.id) (p.chunks ??= []).push(Buffer.from(raw.subarray(4)));
+          return;
+        }
         let msg: PageMessage;
         try {
           msg = JSON.parse(String(raw));
@@ -213,7 +256,7 @@ export function startHub(options: HubOptions): Hub {
           if (!p) return;
           pending.delete(msg.id);
           clearTimeout(p.timer);
-          if (msg.type === 'result') p.resolve(msg.result);
+          if (msg.type === 'result') p.resolve(p.chunks ? saveFile(p, msg.result) : msg.result);
           else p.reject(new Error(msg.error));
         }
       },

@@ -19,12 +19,14 @@ import {sceneHints} from '../runtime/hints';
 import {declareAssignments, InputLanguage, normalizeSource, repairSnippet} from '../runtime/normalize';
 import type {InspectInfo, ItemId, SceneEntry, Timeline} from '../runtime/engine';
 import {
+  BLOB_CHUNK,
   CallMessage,
   DEFAULT_HUB_PORT,
   Edit,
   EditorMethods,
   EditorSnapshot,
   EditResult,
+  ExportReport,
   InspectItem,
   InspectResult,
   PageMessage,
@@ -33,12 +35,22 @@ import {
   RunReport,
 } from '../mcp/protocol';
 import type {Example} from './examples';
+import type {Exporter} from './export';
+import {loadHarness} from './sandbox';
 import type {Settings} from './settings';
 import {hashParam} from './settings';
+import {applyEdit, lineDiff, revisionOf} from '../runtime/textdiff';
+
+export {applyEdit, lineDiff, revisionOf};
+export type {DiffLine} from '../runtime/textdiff';
 
 /** What the bridge needs from the editor state (kept narrow on purpose). */
 export interface AgentHost {
+  /** The bundled examples. */
   examples: Example[];
+  /** The user's own scenes, most recently edited first. */
+  myScenes: Accessor<Example[]>;
+  exporter: Exporter;
   settings: Settings;
   getSource(): string;
   example: Accessor<Example>;
@@ -110,16 +122,6 @@ function loadPrefs(): {enabled: boolean; port: number} {
   };
 }
 
-/** FNV-1a: a short, stable fingerprint of the source. */
-export function revisionOf(source: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < source.length; i++) {
-    h ^= source.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
-
 const isManimSource = (code: string) => /^[ \t]*from\s+['"]?manim['"]?\s+import\s+\*/m.test(code) || /from\s*['"]manim['"]/.test(code);
 
 /** Which spelling the code mostly uses for Manim-layer names. */
@@ -141,33 +143,14 @@ function namingOf(code: string): 'snake' | 'camel' {
 class Sandbox {
   private ready: Promise<any> | null = null;
 
-  private load(): Promise<any> {
-    const frame = document.createElement('iframe');
-    frame.src = new URL('harness.html?agent', location.href).href;
-    frame.title = 'Agent preview sandbox';
-    frame.setAttribute('aria-hidden', 'true');
-    frame.tabIndex = -1;
-    // Off-screen but rendered: a `display: none` frame gets no canvas updates in some engines.
-    Object.assign(frame.style, {position: 'fixed', left: '-10000px', top: '0', width: '960px', height: '540px', border: '0', opacity: '0', pointerEvents: 'none'});
-    document.body.append(frame);
-    return new Promise((resolve, reject) => {
-      const started = performance.now();
-      const poll = () => {
-        const agent = (frame.contentWindow as any)?.harnessAgent;
-        if (agent) return resolve(agent);
-        if (performance.now() - started > 30_000) {
-          frame.remove();
-          this.ready = null;
-          return reject(new Error('The preview sandbox (harness.html) did not load. The single-file build does not include it.'));
-        }
-        setTimeout(poll, 50);
-      };
-      poll();
-    });
-  }
-
   public agent(): Promise<any> {
-    return (this.ready ??= this.load());
+    return (this.ready ??= loadHarness().then(
+      h => h.agent,
+      e => {
+        this.ready = null;
+        throw e;
+      },
+    ));
   }
 }
 
@@ -240,6 +223,7 @@ export function createAgentBridge(host: AgentHost) {
     const snap: EditorSnapshot = {
       document: {
         slug: host.exampleSlug(),
+        kind: host.example().user ? 'scene' : 'example',
         title: host.example().title,
         fileName: host.fileName(),
         language,
@@ -258,6 +242,7 @@ export function createAgentBridge(host: AgentHost) {
       selection: selection ? {id: selection.id, name: selection.name, kind: selection.kind, line: selection.line} : null,
       cursorLine: host.cursorLine(),
       editMode: s.agentEdits,
+      myScenes: host.myScenes().map(e => ({slug: e.slug, title: e.title})),
     };
     if (params.includeSource !== false) snap.source = source;
     if (params.as && params.as !== language) {
@@ -316,10 +301,13 @@ export function createAgentBridge(host: AgentHost) {
     }
     host.applyExternal(code, summary);
     note(`Applied: ${summary}`, diagnostics.length || (run && !run.ok) ? 'warn' : 'ok');
-    return {applied: true, revision: revisionOf(code), language, conversion, diagnostics, hints, run};
+    return {applied: true, revision: revisionOf(code), language, conversion, diagnostics, hints, run, source: code};
   };
 
   // --------------------------------------------------------- methods
+
+  /** Files to send to the hub ahead of the result they belong to. */
+  const outgoing = new WeakMap<object, Blob>();
 
   const methods: {[K in keyof EditorMethods]: (params: Parameters<EditorMethods[K]>[0]) => Promise<ReturnType<EditorMethods[K]>> | ReturnType<EditorMethods[K]>} = {
     state: params => snapshot(params),
@@ -401,11 +389,18 @@ export function createAgentBridge(host: AgentHost) {
       return {...r, warnings: layoutWarnings(r.items)};
     },
 
-    async open({example, code, language, name}) {
+    async open({example, scene, code, language, name}) {
       if (example) {
         if (!host.examples.some(e => e.slug === example)) throw new Error(`No example "${example}".`);
         host.loadExample(example, false);
         note(`Opened the example ${example}`);
+      } else if (scene) {
+        const wanted = scene.trim().toLowerCase();
+        const mine = host.myScenes();
+        const doc = mine.find(e => e.slug === scene) ?? mine.find(e => e.title.toLowerCase() === wanted);
+        if (!doc) throw new Error(`The user has no scene "${scene}". Their scenes: ${mine.map(e => `${e.title} (${e.slug})`).join(', ') || 'none'}.`);
+        host.loadExample(doc.slug, false);
+        note(`Opened the scene ${doc.title}`);
       } else if (code !== undefined) {
         const converted = toDocument(code, language);
         if (!converted.ok) throw new Error(converted.error);
@@ -426,9 +421,17 @@ export function createAgentBridge(host: AgentHost) {
       return {ok: true};
     },
 
+    async export({format, height, fps, width, time}) {
+      note(`Exporting ${format === 'embed' ? 'a web embed' : format === 'image' ? 'an image' : `a ${format}`}…`);
+      const file = await host.exporter.run({kind: format, height, fps, width, time: format === 'image' ? (time ?? host.time()) : undefined});
+      note(`Exported ${file.fileName}`, 'ok');
+      const report: ExportReport = {format, fileName: file.fileName, extension: file.extension, mime: file.mime, bytes: file.blob.size, width: file.width, height: file.height, fps: file.fps, frames: file.frames, seconds: file.seconds, codec: file.codec, snippet: file.snippet, realtime: file.realtime};
+      outgoing.set(report, file.blob);
+      return report;
+    },
+
     examples: () =>
       host.examples
-        .filter(e => !e.slug.startsWith('scratch'))
         .map(e => ({slug: e.slug, title: e.title, description: e.description, style: e.style, order: e.order, code: e.code, python: e.python, tsx: e.tsx})),
   };
 
@@ -454,9 +457,27 @@ export function createAgentBridge(host: AgentHost) {
     const reply = (m: PageMessage) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(m));
     if (!fn) return reply({type: 'error', id: msg.id, error: `Unknown method ${msg.method}`});
     try {
-      reply({type: 'result', id: msg.id, result: await fn(msg.params ?? {})});
+      const result = await fn(msg.params ?? {});
+      const blob = result && typeof result === 'object' ? outgoing.get(result) : undefined;
+      if (blob) await sendBlob(msg.id, blob);
+      reply({type: 'result', id: msg.id, result});
     } catch (e) {
       reply({type: 'error', id: msg.id, error: (e as Error).message ?? String(e)});
+    }
+  };
+
+  /** Send a file to the hub as binary frames, each tagged with the call's id. */
+  const sendBlob = async (id: number, blob: Blob) => {
+    const ws = socket;
+    for (let at = 0; at < blob.size; at += BLOB_CHUNK) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error('The MCP server disconnected while the file was being sent.');
+      const piece = new Uint8Array(await blob.slice(at, at + BLOB_CHUNK).arrayBuffer());
+      const frame = new Uint8Array(4 + piece.byteLength);
+      new DataView(frame.buffer).setUint32(0, id, true);
+      frame.set(piece, 4);
+      ws.send(frame);
+      // Do not queue a whole video in memory a second time.
+      while (ws.bufferedAmount > 8 * BLOB_CHUNK) await new Promise(r => setTimeout(r, 20));
     }
   };
 
@@ -568,38 +589,6 @@ export function createAgentBridge(host: AgentHost) {
 
 export type AgentBridge = ReturnType<typeof createAgentBridge>;
 
-/** Apply one find-and-replace edit; returns the new text or why not. */
-export function applyEdit(source: string, edit: Edit): string | {error: string} {
-  const count = (text: string, needle: string) => (needle ? text.split(needle).length - 1 : 0);
-  let old = edit.old;
-  let replacement = edit.new;
-  let n = count(source, old);
-  if (n === 0) {
-    // Text copied from get_editor_state with its line-number gutter.
-    const gutter = /^\s*\d+│ ?/;
-    const lines = old.split('\n');
-    if (lines.every(l => gutter.test(l) || l === '')) {
-      old = lines.map(l => l.replace(gutter, '')).join('\n');
-      replacement = replacement
-        .split('\n')
-        .map(l => l.replace(gutter, ''))
-        .join('\n');
-      n = count(source, old);
-    }
-  }
-  if (n === 0) {
-    // Trailing whitespace differences.
-    const trimmed = old.replace(/[ \t]+$/gm, '');
-    const src = source.replace(/[ \t]+$/gm, '');
-    if (trimmed !== old && count(src, trimmed) === 1) return src.replace(trimmed, () => replacement);
-    const first = old.split('\n').find(l => l.trim())?.trim();
-    const near = first ? source.split('\n').findIndex(l => l.includes(first)) : -1;
-    return {error: `\`old\` was not found in the document.${near >= 0 ? ` Its first line appears at line ${near + 1}; copy the text exactly, including indentation.` : ' Re-read the document with get_editor_state.'}`};
-  }
-  if (n > 1 && !edit.all) return {error: `\`old\` occurs ${n} times. Include more surrounding text to make it unique, or set \`all\`.`};
-  return edit.all ? source.split(old).join(replacement) : source.replace(old, () => replacement);
-}
-
 const FRAME = {x: 64 / 9 + 0.05, y: 4 + 0.05};
 const TEXTISH = /Text|Tex|Paragraph|Title|DecimalNumber|Integer|Variable|Txt|Latex|Code/;
 
@@ -627,40 +616,6 @@ function layoutWarnings(items: InspectItem[]): string[] {
       const smaller = Math.min((ar - al) * (at - ab), (cr - cl) * (ct - cb));
       if (smaller > 0 && (w * h) / smaller > 0.15) out.push(`${label(texts[a])} and ${label(texts[c])} overlap.`);
     }
-  }
-  return out;
-}
-
-export interface DiffLine {
-  kind: 'same' | 'add' | 'del' | 'gap';
-  text: string;
-}
-
-/** Line diff (LCS) with two lines of context around each change. */
-export function lineDiff(before: string, after: string, context = 2): DiffLine[] {
-  const a = before.split('\n');
-  const b = after.split('\n');
-  if (a.length * b.length > 4_000_000) return [{kind: 'gap', text: 'The change is too large to show as a diff.'}];
-  const lcs: Uint32Array[] = Array.from({length: a.length + 1}, () => new Uint32Array(b.length + 1));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-  }
-  const all: DiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) {
-      all.push({kind: 'same', text: a[i]});
-      i++;
-      j++;
-    } else if (i < a.length && (j >= b.length || lcs[i + 1][j] >= lcs[i][j + 1])) all.push({kind: 'del', text: a[i++]});
-    else all.push({kind: 'add', text: b[j++]});
-  }
-  const keep = all.map((l, k) => l.kind !== 'same' || all.slice(Math.max(0, k - context), k + context + 1).some(n => n.kind !== 'same'));
-  const out: DiffLine[] = [];
-  for (let k = 0; k < all.length; k++) {
-    if (keep[k]) out.push(all[k]);
-    else if (out[out.length - 1]?.kind !== 'gap') out.push({kind: 'gap', text: '⋯'});
   }
   return out;
 }

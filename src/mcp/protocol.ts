@@ -54,8 +54,10 @@ export interface RunReport {
 }
 
 export interface DocumentInfo {
-  /** Example slug or `scratch`/`scratch-native`. */
+  /** An example's slug, or `my-…` for one of the user's own scenes. */
   slug: string;
+  /** `scene`: one of the user's own scenes. `example`: a bundled example (possibly edited). */
+  kind: 'scene' | 'example';
   title: string;
   fileName: string | null;
   /** Language the document is edited in. */
@@ -88,6 +90,8 @@ export interface EditorSnapshot {
   cursorLine: number;
   /** How agent edits land: applied at once, or proposed for the user to accept. */
   editMode: 'apply' | 'review';
+  /** The user's own scenes, most recently edited first. */
+  myScenes: {slug: string; title: string}[];
 }
 
 export interface EditResult {
@@ -104,8 +108,40 @@ export interface EditResult {
   hints: Hint[];
   /** The new source ran in an isolated copy of the engine. */
   run?: RunReport;
-  /** The current source when the edit could not be applied. */
+  /** The document after the call: the new text when applied, the unchanged current text when not. */
   source?: string;
+}
+
+export type ExportFormat = 'video' | 'gif' | 'embed' | 'image';
+
+/** Where the hub saves an exported file: a directory (the editor names the file) or a file. */
+export interface SaveTarget {
+  dir?: string;
+  file?: string;
+}
+
+export interface ExportReport {
+  format: ExportFormat;
+  /** The name the editor gave the file. */
+  fileName: string;
+  extension: string;
+  mime: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  frames?: number;
+  /** Length in seconds. */
+  seconds?: number;
+  codec?: string;
+  /** embed: the tag to paste into a web page next to the file. */
+  snippet?: string;
+  /** Recorded while playing rather than frame by frame (no WebCodecs in this webview). */
+  realtime?: boolean;
+  /** Set by the hub: where it wrote the file. */
+  path?: string;
+  /** Set by the hub when it could not write the file. */
+  saveError?: string;
 }
 
 export interface Edit {
@@ -170,13 +206,24 @@ export interface EditorMethods {
   };
   render(params: {code?: string; language?: InputLanguage | 'auto'; times?: number[]; count?: number; width?: number}): RenderResult;
   inspect(params: {code?: string; language?: InputLanguage | 'auto'; time: number}): InspectResult;
-  open(params: {example?: string; code?: string; language?: InputLanguage | 'auto'; name?: string}): EditorSnapshot;
+  open(params: {example?: string; scene?: string; code?: string; language?: InputLanguage | 'auto'; name?: string}): EditorSnapshot;
+  /**
+   * Export the open scene. The page sends the file's bytes as binary frames
+   * before its result (see `blobFrame`), and the hub writes them to `saveTo`.
+   */
+  export(params: {format: ExportFormat; height?: number; fps?: number; width?: number; time?: number; saveTo?: SaveTarget}): ExportReport;
   reveal(params: {line?: number; time?: number; step?: number}): {ok: true};
   /** The bundled examples (for a server that has no examples/ directory, like the desktop app). */
   examples(params: Record<string, never>): ExampleInfo[];
 }
 
 export type EditorMethod = keyof EditorMethods;
+
+/**
+ * A binary frame from the page: the id of the call it belongs to (uint32,
+ * little-endian), then a piece of the file that call produced.
+ */
+export const BLOB_CHUNK = 1 << 20;
 
 /** Hub → page. */
 export interface CallMessage {

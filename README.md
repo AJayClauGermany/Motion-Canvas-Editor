@@ -14,6 +14,11 @@ It supports two styles, and the author chooses per scene:
 Both get the same editor: timeline, outline, inspector, click-to-select and
 error lines. They can also be mixed in one scene.
 
+The path from an idea to something you can post is short on purpose: the
+editor opens on a scene of your own, it runs as you type, and **Export** turns
+it into a video, a GIF, a web embed or an image with defaults that need no
+decisions.
+
 ```civet
 from manim import *
 
@@ -70,12 +75,33 @@ In the Claude Code cloud sandbox, run `tools/sandbox/setup.sh` first (see
 | Scene panel | Mobjects and native nodes on screen at the current frame, and an inspector for the selected one |
 | Cheat sheet | Manim (Python) → Civet, or Motion Canvas (TSX) → Civet, depending on the open scene |
 | Reference pane | The source an example was ported from (Manim Python, or Canvas Commons TSX), or the compiled output, next to your source |
-| Import Python | Paste a Manim scene in Python; a converter rewrites it to Civet and opens it |
-| Export | Current frame as PNG, or a real-time video recording (Chromium only) |
+| My scenes | The editor opens on your own scene (a new one the first time, the last one after that). **+ New** adds another; its menu starts from the other style, a file, Manim Python or a copy. Scenes are saved in the browser as you type and renamed in place |
+| Import Python | Paste a Manim scene in Python; a converter rewrites it to Civet and opens it as a new scene |
+| Export | One button (Ctrl/Cmd+Shift+E), then Enter: MP4 video, GIF, web embed, PNG of the current frame, or the code. See below |
 | Agent | Connect an AI agent you already use (Claude Code, Cursor, …) over MCP: it can read, edit, check and render the scene. See below |
 
 Edits re-run after 250 ms and keep the playhead where it was. If the code does
 not compile, the preview keeps showing the last version that did.
+
+## Export
+
+| Format | What you get | Default | Options |
+|---|---|---|---|
+| Video | MP4 (H.264), every frame rendered exactly | 1080p, 30 fps | 720p · 1080p · 4K, 30 · 60 fps |
+| GIF | A looping GIF | 640 px wide, 20 fps | 480 · 640 · 960 px |
+| Web embed | One self-contained HTML file with a small player (click to pause, scrub bar), and the `<iframe>` line to paste into your page | plays and loops while on screen | in the URL hash: `#autoplay=0&loop=0&controls=0&t=1.5` |
+| Image | PNG of the frame under the playhead | 1080p | 720p · 1080p · 4K |
+| Code | The scene's `.civet` or `.tsx` | | |
+
+Video, GIF and image are rendered in a hidden second engine at the size of
+the result, so the preview keeps playing and its quality setting does not
+matter. Video uses WebCodecs (Chrome, Edge, Safari); a 3-second scene takes
+about a second. Where H.264 cannot be encoded the file is WebM, and a webview
+without WebCodecs falls back to recording the preview while it plays.
+
+The web embed is the Canvas Commons player with the compiled scene inside
+(`player.html`, built into `player-template.html`): about 2.8 MB, 0.9 MB
+gzipped, with no dependencies and no network requests.
 
 ## AI agents (MCP)
 
@@ -90,8 +116,14 @@ claude mcp add motion-canvas -- bun run --cwd /path/to/Motion-Canvas-Editor mcp 
 Then switch **Agent** on in the editor's top bar. Agents may write TSX,
 Civet, a mix, or Manim Python: the tools convert it to the document's language
 and repair what would compile to something else. Edits can land at once
-(undo with Ctrl/Cmd+Z) or wait for you to accept them. Details, tools and
-security: [docs/agents.md](docs/agents.md).
+(undo with Ctrl/Cmd+Z) or wait for you to accept them.
+
+The agent has the same workflow as you, through tools: start a scene, edit,
+check, look at frames, and `export_scene` to a file. You can take over at any
+point: the agent is told what you changed before its next step, its edits
+merge with your text, and it cannot replace work it has not seen. Its own
+changes are marked in the code. Details, tools and security:
+[docs/agents.md](docs/agents.md).
 
 ## Choices to review (the Lab)
 
@@ -107,6 +139,7 @@ notes on the clipboard as Markdown.
 | Scene reference | `@play` · `self.play` | `@play` |
 | Vector math | `2 * UP + LEFT` via operator overloading · plain JS | overloading |
 | Source language | Civet · TSX (compiled without Civet). Applies to both styles, and switching converts the open scene | Civet |
+| On launch | your own scene · a gallery example | your own scene |
 | Layout | Studio · Split · Stage | Studio |
 | When to re-run | as you type · on Ctrl/Cmd+Enter | as you type |
 | Reference pane | hidden · Manim (Python) · compiled TS | hidden |
@@ -146,6 +179,9 @@ adding a variant is one entry there plus the code that reads it.
   server round trip, which is what lets the same build run as a web page and
   inside the desktop shell. `python.ts` is the Python → Civet converter.
 - **`src/editor/`** is the UI in Solid 2.
+- **`player.html`** and `src/player.ts` are the web embed: the engine without
+  the editor or the compiler. `bun run build` also builds it as one file,
+  `dist/player-template.html`, which the export fills with a scene.
 - **`shell/`** is the Electrobun desktop shell around the web build.
 - **`examples/`** holds the bundled scenes. Each has `scene.civet`, optionally
   the original `manim.py`, and `meta.json`.
@@ -225,11 +261,14 @@ example at `vite preview`).
   Manim side, and a mobject hosted in a native tree is not a flex item. The
   full list is in [docs/manim-compatibility.md](docs/manim-compatibility.md)
   under "Mixing with Canvas Commons nodes".
-- Video export records in real time with `MediaRecorder`, which the Linux
-  desktop webview (WebKitGTK) does not support. Frame-exact rendering through
-  Canvas Commons' renderer is not wired up yet.
-- One scene file at a time. Open and Save use the browser's file picker and
-  downloads; there is no project folder yet.
+- Exports have no sound, and a GIF uses a separate palette per frame (fine for
+  flat graphics, visible banding on gradients).
+- Frame-exact video needs WebCodecs. Whether the Linux desktop webview
+  (WebKitGTK) has it has not been checked; without it the export records in
+  real time, and without `MediaRecorder` too there is no video export.
+- Your scenes live in this browser's storage: there is no project folder and
+  no sync between machines yet. Export → Code downloads a scene, and
+  New → Open a file brings one back.
 
 ## Licence
 

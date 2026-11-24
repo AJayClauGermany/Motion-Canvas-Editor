@@ -66,7 +66,7 @@ const textOf = result => result.content.filter(c => c.type === 'text').map(c => 
 
     // Without an editor: static tools work, editor tools explain what to do.
     const tools = (await client.listTools()).tools.map(t => t.name);
-    check('server lists the tools', ['get_editor_state', 'edit_scene', 'write_scene', 'check_scene', 'render_preview', 'read_docs', 'lookup_api'].every(t => tools.includes(t)), tools.join(', '));
+    check('server lists the tools', ['get_editor_state', 'edit_scene', 'write_scene', 'check_scene', 'render_preview', 'export_scene', 'read_docs', 'lookup_api'].every(t => tools.includes(t)), tools.join(', '));
     check('server sends instructions', /Civet pitfalls/.test(client.getInstructions() ?? ''));
     const noEditor = await call('get_editor_state');
     check('editor tools say how to connect when no editor is open', noEditor.isError && /switch on "Agent"/.test(textOf(noEditor)), textOf(noEditor));
@@ -177,6 +177,47 @@ export class Demo extends Scene {
     await page.locator('.agent-toggle').click();
     await page.getByRole('button', {name: 'Apply', exact: true}).click();
     await page.locator('.agent-toggle').click();
+
+    // The user takes over: the agent is told what they changed before it does anything else.
+    await page.locator('.cm-content').first().click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('\n# the user wants it slower');
+    await page.waitForTimeout(400);
+    const afterUser = textOf(await call('render_preview', {count: 1}));
+    check('a tool call reports what the user changed meanwhile', /edited in the editor/.test(afterUser) && /\+ # the user wants it slower/.test(afterUser), afterUser.slice(0, 500));
+    const quiet = textOf(await call('inspect_frame', {time: 1}));
+    check('a change is reported once', !/edited in the editor/.test(quiet));
+    await page.keyboard.type('\n# and bigger');
+    await page.waitForTimeout(400);
+    const blocked = await call('write_scene', {code: 'from manim import *\n\nclass Other extends Scene\n  construct()\n    @wait 1\n', summary: 'Start over'});
+    check('write_scene does not replace user edits the agent has not seen', blocked.isError && /Nothing was changed/.test(textOf(blocked)) && /\+ # and bigger/.test(textOf(blocked)) && /and bigger/.test(await page.locator('.cm-content').first().innerText()), textOf(blocked).slice(0, 400));
+    const merged = await call('edit_scene', {edits: [{old: 'font_size: 60', new: 'font_size: 48'}], summary: 'Smaller title'});
+    check('edit_scene merges with what the user typed', !merged.isError && /and bigger/.test(await page.locator('.cm-content').first().innerText()) && /font_size: 48/.test(await page.locator('.cm-content').first().innerText()), textOf(merged).slice(0, 300));
+
+    // Export, as the user would with the Export button; the file lands on disk.
+    const exportDir = path.join(out, 'exports');
+    fs.rmSync(exportDir, {recursive: true, force: true});
+    const video = await call('export_scene', {path: exportDir});
+    const videoText = textOf(video);
+    const videoPath = /Exported to (.+)/.exec(videoText)?.[1];
+    check('export_scene writes an MP4 with no options', !video.isError && !!videoPath && fs.existsSync(videoPath) && fs.readFileSync(videoPath).subarray(4, 8).toString() === 'ftyp' && /MP4 video \(H\.264\), 1920 × 1080, 30 fps/.test(videoText), videoText);
+    const embedFile = path.join(exportDir, 'page', 'intro.html');
+    const embed = await call('export_scene', {format: 'embed', path: embedFile});
+    check('export_scene writes a web embed and the tag to paste', !embed.isError && fs.existsSync(embedFile) && /<iframe src=/.test(textOf(embed)), textOf(embed));
+    const gif = await call('export_scene', {format: 'gif', path: path.join(exportDir, 'clip.mp4'), width: 320});
+    check('export_scene corrects the extension', !gif.isError && fs.existsSync(path.join(exportDir, 'clip.gif')), textOf(gif));
+    const still = await call('export_scene', {format: 'image', time: 2, path: exportDir});
+    check('export_scene writes a PNG frame', !still.isError && /PNG image, 1920 × 1080/.test(textOf(still)), textOf(still));
+    check('the editor says what was exported', /Exported/.test(await page.locator('.agent-toggle').click().then(() => page.locator('.agent-log').innerText())));
+    await page.locator('.agent-toggle').click();
+
+    // New work goes next to the user's scenes, never over them.
+    const fresh = textOf(await call('open_scene', {code: 'from manim import *\n\nclass Hello extends Scene\n  construct()\n    @play Write Text "hi"\n', name: 'Agent idea'}));
+    check('open_scene with code adds a scene of its own', /Opened Agent idea \(my-/.test(fresh), fresh);
+    const listed = textOf(await call('get_editor_state', {include_source: false}));
+    check("get_editor_state says whose document it is", /one of the user's own scenes/.test(listed), listed.slice(0, 300));
+    const overwrite = await call('write_scene', {code: 'from manim import *\n\nclass Hello extends Scene\n  construct()\n    @play Write Text "hello"\n    @wait 1\n'});
+    check('write_scene replaces a scene the agent has read', !overwrite.isError && /Run: ok/.test(textOf(overwrite)), textOf(overwrite).slice(0, 300));
 
     // Opening an example, and pointing the user at a step.
     const opened = textOf(await call('open_scene', {example: 'cc-quickstart'}));

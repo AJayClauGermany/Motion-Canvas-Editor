@@ -45,6 +45,10 @@ const theme = EditorView.theme({
     backgroundColor: 'var(--playing-bg)',
     boxShadow: 'inset 3px 0 0 var(--accent)',
   },
+  '.cm-agent-line': {
+    backgroundColor: 'color-mix(in srgb, var(--brand-b) 9%, transparent)',
+    boxShadow: 'inset 3px 0 0 var(--brand-b)',
+  },
   '.cm-tooltip': {backgroundColor: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)'},
   '.cm-tooltip-autocomplete ul li[aria-selected]': {backgroundColor: 'var(--accent)', color: 'var(--accent-text)'},
   '.cm-panels': {backgroundColor: 'var(--panel-2)', color: 'var(--text)'},
@@ -61,6 +65,23 @@ const playingLine = StateField.define<DecorationSet>({
       if (e.value === null || e.value < 1 || e.value > tr.state.doc.lines) return Decoration.none;
       const line = tr.state.doc.line(e.value);
       return Decoration.set([Decoration.line({class: 'cm-playing-line'}).range(line.from)]);
+    }
+    return value;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+/** Lines an outside agent just changed, until the author edits again. */
+const setAgentLines = StateEffect.define<number[]>();
+const agentLines = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, tr) {
+    value = value.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setAgentLines)) continue;
+      const doc = tr.state.doc;
+      const mark = Decoration.line({class: 'cm-agent-line', attributes: {title: 'Changed by the agent'}});
+      return Decoration.set([...new Set(e.value)].filter(n => n >= 1 && n <= doc.lines).sort((a, b) => a - b).map(n => mark.range(doc.line(n).from)));
     }
     return value;
   },
@@ -92,6 +113,8 @@ export interface CodeEditor {
   setDoc(doc: string): void;
   setDiagnostics(list: Diagnostic[]): void;
   setPlayingLine(line: number | null): void;
+  /** Mark the lines (1-based) an agent changed; an empty list clears the marks. */
+  setAgentLines(lines: number[]): void;
   revealLine(line: number): void;
   setLanguage(language: keyof typeof languages): void;
   destroy(): void;
@@ -164,6 +187,7 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
         syntaxHighlighting(highlight),
         theme,
         playingLine,
+        agentLines,
         lintGutter(),
         readOnly.of([EditorState.readOnly.of(!!options.readOnly), EditorView.editable.of(!options.readOnly)]),
         ...(options.naming && !options.readOnly
@@ -215,6 +239,9 @@ export function createCodeEditor(parent: HTMLElement, options: CodeEditorOptions
     },
     setPlayingLine(line) {
       view.dispatch({effects: setPlayingLine.of(line)});
+    },
+    setAgentLines(lines) {
+      view.dispatch({effects: setAgentLines.of(lines)});
     },
     revealLine(line) {
       const doc = view.state.doc;

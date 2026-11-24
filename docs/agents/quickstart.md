@@ -100,6 +100,30 @@ export default makeScene2D(function* (view) {
    what is on screen with bounds, and warns about off-frame or overlapping
    items.
 5. **Explain**: `reveal_in_editor` moves the editor to a line, time or step.
+6. **Deliver**: `export_scene` writes the result to a file and returns its
+   path. It needs no options: the default is an MP4 video (1080p, 30 fps).
+   `format: "gif"`, `"embed"` (one HTML file with a player, plus the `<iframe>`
+   tag for a web page) and `"image"` are the alternatives.
+
+To start something new, `open_scene` with `code`: it becomes a new scene of
+the user's, next to the one that was open. `write_scene` is for replacing the
+open scene.
+
+## Sharing the document with the user
+
+The user edits the same document and can take over at any moment.
+
+- Every tool that touches the open scene first says what changed in the
+  editor since you last read it, as a diff. Treat it as the user's latest
+  intent, and keep it.
+- `edit_scene` applies to their current text. If they opened another scene,
+  it refuses until you have read that one.
+- `write_scene` does not replace work of the user's that you have not been
+  shown: the first call returns the current scene instead. Call it again only
+  if replacing everything is still right.
+- The user sees a note for each of your changes, with the changed lines
+  marked, and one undo removes it. In "Ask first" mode they accept or reject
+  each change, and you are told which.
 
 Before relying on a name from Manim or Motion Canvas, `lookup_api` it: only
 Manim's 2D core is implemented (no 3D, SVG or images, `MarkupText`, tables,

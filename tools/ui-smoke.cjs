@@ -33,7 +33,81 @@ const check = (name, ok, detail = '') => {
   const shot = name => page.screenshot({path: path.join(out, `${name}.png`)});
   const settle = (ms = 500) => page.waitForTimeout(ms);
 
+  // First launch: a scene of the author's own, ready to write in.
+  await page.goto(base + '/');
+  await page.waitForSelector('.block', {timeout: 60000});
+  const sceneName = () => page.locator('.file-tab .scene-name').inputValue();
+  const picked = () => page.locator('.scene-select').evaluate(el => el.selectedOptions[0]?.textContent.trim());
+  check('first launch opens a new scene of your own', (await sceneName()) === 'Untitled' && (await page.locator('.block').count()) === 2 && /Ready/.test(await page.locator('.status').innerText()));
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type('\n@play FadeOut title\n');
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 10000}).catch(() => {});
+  await page.locator('.file-tab .scene-name').fill('My first scene');
+  await page.keyboard.press('Enter');
+  await settle(200);
+  check('a scene can be renamed in place', (await picked()) === 'My first scene', await picked());
+  await shot('00-first-launch');
+
+  // Export: one button, defaults that work, Enter.
+  const exported = async kind => {
+    await page.locator('.export-kinds button').filter({has: page.locator('b', {hasText: new RegExp(`^${kind}$`)})}).click();
+    const [download] = await Promise.all([page.waitForEvent('download', {timeout: 120000}), page.keyboard.press('Enter')]);
+    const file = path.join(out, `export-${download.suggestedFilename()}`);
+    await download.saveAs(file);
+    await page.waitForSelector('.export-done', {timeout: 10000}).catch(() => {});
+    return {name: download.suggestedFilename(), bytes: fs.readFileSync(file)};
+  };
+  await page.getByRole('button', {name: 'Export', exact: true}).click();
+  await page.waitForSelector('.export-modal');
+  check('the export dialog starts on video with its defaults', /MP4 video · 1920 × 1080 · 30 fps · 3\.0 s/.test(await page.locator('.export-summary').innerText()), await page.locator('.export-summary').innerText());
+  await shot('00-export');
+  const video = await exported('Video');
+  // An MP4 starts with an `ftyp` box; frame-exact means 3 s at 30 fps is 90 frames however fast this machine is.
+  check('video export downloads an MP4', video.name === 'my-first-scene.mp4' && video.bytes.subarray(4, 8).toString() === 'ftyp' && video.bytes.length > 5000, `${video.name} ${video.bytes.length} bytes`);
+  const gif = await exported('GIF');
+  check('GIF export downloads a GIF', gif.name === 'my-first-scene.gif' && gif.bytes.subarray(0, 6).toString() === 'GIF89a', `${gif.name} ${gif.bytes.length} bytes`);
+  const image = await exported('Image');
+  check('image export downloads a PNG', image.name === 'my-first-scene-frame.png' && image.bytes.subarray(1, 4).toString() === 'PNG', image.name);
+  const embed = await exported('Web embed');
+  const embedHtml = embed.bytes.toString();
+  check('web embed export downloads one self-contained HTML file', embed.name === 'my-first-scene.html' && /<title>My first scene<\/title>/.test(embedHtml) && /"prelude":true/.test(embedHtml) && !/<script[^>]+src=/.test(embedHtml), `${embed.name} ${embed.bytes.length} bytes`);
+  check('web embed shows the tag to paste', /<iframe src="my-first-scene\.html"/.test(await page.locator('.export-done .copy-line code').innerText().catch(() => '')));
+  await shot('00-export-embed');
+  const code = await exported('Code');
+  check('code export downloads the source', code.name === 'my-first-scene.civet' && /@play FadeOut title/.test(code.bytes.toString()));
+  await page.getByRole('button', {name: 'Done', exact: true}).click();
+  {
+    // The exported embed plays on its own, from a file.
+    const embedPage = await browser.newPage({viewport: {width: 640, height: 360}});
+    const embedProblems = [];
+    embedPage.on('pageerror', e => embedProblems.push(e.message));
+    await embedPage.goto('file://' + path.join(out, 'export-my-first-scene.html'));
+    await embedPage.waitForFunction(() => parseFloat(document.getElementById('fill').style.width) > 5, null, {timeout: 20000}).catch(() => {});
+    check('the exported embed plays from a file', embedProblems.length === 0 && (await embedPage.locator('canvas').count()) === 1 && parseFloat(await embedPage.locator('#fill').evaluate(el => el.style.width)) > 5, embedProblems.join(' | '));
+    await embedPage.screenshot({path: path.join(out, '00-embed-page.png')});
+    await embedPage.close();
+  }
+
+  // New scenes sit next to each other; nothing is overwritten, and a reload comes back to the last one.
+  await page.getByRole('button', {name: '+ New', exact: true}).click();
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 2, null, {timeout: 10000}).catch(() => {});
+  check('New adds a second scene', (await sceneName()) === 'Untitled' && (await page.locator('.scene-select optgroup').first().locator('option').count()) === 2);
+  await page.locator('.scene-select').selectOption({label: 'My first scene'});
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 10000}).catch(() => {});
+  check('the first scene kept its edits', /@play FadeOut title/.test(await page.locator('.cm-content').first().innerText()));
+  await page.reload();
+  await page.waitForSelector('.block', {timeout: 60000});
+  check('a reload reopens the scene you were on', (await sceneName()) === 'My first scene' && (await page.locator('.block').count()) === 3);
+  await page.getByRole('button', {name: 'More ways to start a scene'}).click();
+  await shot('00-new-menu');
+  await page.getByRole('menuitem', {name: 'Delete this scene…'}).click();
+  await page.getByRole('menuitem', {name: /for good/}).click();
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 2, null, {timeout: 10000}).catch(() => {});
+  check('deleting a scene opens the next one', (await sceneName()) === 'Untitled' && (await page.locator('.scene-select optgroup').first().locator('option').count()) === 1);
+
   await page.goto(base + '/#example=square-to-circle');
+  await page.reload();
   await page.waitForSelector('.block', {timeout: 60000});
   check('timeline has one block per play call', (await page.locator('.block').count()) === 3);
   check('status is ready', /Ready/.test(await page.locator('.status').innerText()));
@@ -109,16 +183,17 @@ const check = (name, ok, detail = '') => {
   await settle(300);
   check('scrubber timeline shows a slider', (await page.locator('.tl-scrubber input').count()) === 1);
   await page.getByRole('button', {name: 'Blocks', exact: true}).click();
-  await page.getByRole('button', {name: 'Close Lab'}).click();
   for (const layout of ['Split', 'Stage', 'Studio']) {
-    await page.locator('.topbar').getByRole('button', {name: layout, exact: true}).click();
+    await page.locator('.lab').getByRole('button', {name: layout, exact: true}).click();
     await settle(500);
     await shot(`06-layout-${layout.toLowerCase()}`);
   }
   check('layout switch keeps the preview canvas', (await page.locator('.canvas-slot canvas').count()) === 1);
+  await page.getByRole('button', {name: 'Close Lab'}).click();
 
   // Import a Manim (Python) scene.
-  await page.getByRole('button', {name: 'Import Python'}).click();
+  await page.getByRole('button', {name: 'More ways to start a scene'}).click();
+  await page.getByRole('menuitem', {name: 'Import Manim Python…'}).click();
   await page.getByRole('button', {name: 'Try a gallery sample'}).click();
   await settle(300);
   check('Python import previews the Civet translation', /class MovingFrameBox extends Scene/.test(await page.locator('.modal pre').innerText()));
@@ -126,6 +201,7 @@ const check = (name, ok, detail = '') => {
   await page.getByRole('button', {name: 'Convert and open'}).click();
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 5, null, {timeout: 15000}).catch(() => {});
   check('imported Python scene runs', (await page.locator('.block').count()) === 5 && (await page.locator('.problems li').count()) === 0);
+  check('an imported scene becomes a scene of your own', (await page.locator('.file-tab .scene-name').count()) === 1);
   await page.locator('.block').nth(3).click();
   await settle(600);
   await shot('08-imported-scene');
