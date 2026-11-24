@@ -20,7 +20,11 @@ function SourceEditor() {
       naming: () => ed.settings.naming,
       vocabulary: () => ed.vocabulary(),
     });
-    return () => editor?.destroy();
+    ed.attachCodeEditor(editor);
+    return () => {
+      ed.attachCodeEditor(null);
+      editor?.destroy();
+    };
   });
 
   createEffect(
@@ -31,11 +35,19 @@ function SourceEditor() {
   // The buffer was replaced from outside (example switch, dialect conversion).
   createEffect(
     () => ed.sourceVersion(),
-    () => editor?.setDoc(ed.getSource()),
+    () => {
+      if (ed.takeDocSwitch()) editor?.openDoc(ed.getSource());
+      else editor?.setDoc(ed.getSource());
+    },
   );
   createEffect(
     () => ed.diagnostics(),
     list => editor?.setDiagnostics(list),
+  );
+  // After the buffer effect above: the marks belong to the new text.
+  createEffect(
+    () => ed.agentLines(),
+    lines => editor?.setAgentLines(lines),
   );
   const playing = createMemo(() => (ed.settings.followPlayhead === 'on' ? ed.activeLine() : null));
   createEffect(
@@ -116,7 +128,30 @@ export function CodePane() {
       <header class="pane-head">
         <span class="file-tab">
           <span class="dot" data-status={ed.status()} />
-          {fileName()}
+          <Show when={ed.example().user} fallback={fileName()}>
+            <input
+              class="scene-name"
+              value={ed.example().title}
+              size={Math.max(4, ed.example().title.length)}
+              spellcheck={false}
+              aria-label="Scene name"
+              title="Rename this scene"
+              onChange={e => {
+                ed.renameScene(e.currentTarget.value);
+                e.currentTarget.value = ed.example().title;
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+                else if (e.key === 'Escape') {
+                  e.currentTarget.value = ed.example().title;
+                  e.currentTarget.blur();
+                }
+              }}
+            />
+            <span class="scene-ext" title={ed.folder() && !ed.folder()!.locked ? `Saved as you type in the folder "${ed.folder()!.name}"` : 'Saved in this browser as you type'}>
+              .{ed.language()} · {ed.folder() ? (ed.folder()!.locked ? 'saved in the browser' : `saved in ${ed.folder()!.name}`) : 'saved'}
+            </span>
+          </Show>
           <Show when={ed.dirty()}>
             <span class="edited" title="Edited (saved in this browser)">
               edited
@@ -130,7 +165,7 @@ export function CodePane() {
           </button>
         </Show>
         <div class="segmented small" role="group" aria-label="Reference pane">
-          <For each={['none', 'python', 'compiled'] as const}>
+          <For each={(['none', 'python', 'compiled'] as const).filter(mode => mode !== 'python' || original() !== null || ed.settings.compare === 'python')}>
             {mode => (
               <button
                 class={{on: ed.settings.compare === mode}}

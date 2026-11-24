@@ -11,6 +11,8 @@ export interface Example {
   python?: string;
   /** The Motion Canvas / Canvas Commons TSX original, for native examples. */
   tsx?: string;
+  /** One of the author's own scenes (`scenes.ts`) rather than a bundled example. */
+  user?: boolean;
 }
 
 import raw from 'virtual:examples';

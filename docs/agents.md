@@ -49,9 +49,11 @@ the Agent popover (editor) change the port together.
 | `get_editor_state` | yes | The open document (with line numbers), language, style, dialect, problems, timeline, playhead, selection, cursor |
 | `edit_scene` | yes | Find-and-replace edits in the document's language |
 | `write_scene` | yes | Replace the document; any language is converted |
-| `open_scene` | yes | Open an example, or new code as a scratch document |
+| `open_scene` | yes | Open an example, one of the user's scenes, or new code as a new scene next to the others |
 | `render_preview` | yes | Frames as one PNG contact sheet, labelled with time, step and line |
 | `inspect_frame` | yes | Items on screen at a time with bounds, colours, text and lines; warnings for off-frame and overlapping text |
+| `export_scene` | yes | Export the open scene to a file, like the Export button: MP4 video (default), GIF, web embed (one HTML file plus the `<iframe>` tag) or PNG. Returns the path |
+| `add_sound_file` | yes | Add a sound clip from disk to the project; scenes play it by file name, and it ends up in the video and the web embed |
 | `reveal_in_editor` | yes | Move the editor to a line, time or step, to show the user something |
 
 \* The desktop app has no `examples/` directory, so there the examples come from the editor.
@@ -89,6 +91,53 @@ So the tools accept any of them and convert to the language the user edits in
 
 Every tool result says what was converted or repaired, so the agent learns the
 dialect as it goes.
+
+## One workflow, two operators
+
+The agent follows the path the user follows in the editor, through tools
+instead of buttons:
+
+| Step | User | Agent |
+|---|---|---|
+| Start | **+ New**, or pick a scene | `open_scene` with `code` (a new scene), `scene` or `example` |
+| Write | the code pane | `edit_scene`, `write_scene` |
+| Check | problems list, timeline | the run report every edit returns, `check_scene` |
+| Look | the preview | `render_preview`, `inspect_frame` |
+| Sound | the **Sounds** tab: add a clip, **Use** | `add_sound_file`, then `add_sound "name"` in the scene |
+| Deliver | **Export** | `export_scene` |
+
+Both work on the same document, so the server keeps each side informed
+(`catchUp` in `src/mcp/server.ts`):
+
+- **User → agent.** The server remembers the text each agent last saw. Every
+  tool that touches the open scene first compares it with the editor, and
+  starts its answer with what changed: a diff of the user's edits, or the
+  name of the scene they switched to. A change is reported once.
+- **The user's text wins.** `edit_scene` is find-and-replace on the current
+  text, so it merges with what the user typed; it refuses when the user
+  opened another scene. `write_scene` refuses to replace a scene of the
+  user's (or an example they edited) that the agent has not been shown, and
+  returns the scene instead; a second call goes through. New code from
+  `open_scene` becomes a new scene, so nothing is overwritten.
+- **Agent → user.** Each change is announced above the code with the agent's
+  summary, the lines it changed are marked until the user types again, and
+  one Ctrl/Cmd+Z undoes it. Exports and renders are listed in the Agent
+  popover.
+
+**The project folder is a third way in.** When the user saves their scenes in
+a folder (New ▾ → "Save my scenes in a folder…"), each scene is a `.civet` or
+`.tsx` file there, and the editor picks up changes made to those files within
+a couple of seconds (`src/editor/project.ts`). An agent with file access can
+therefore also work on the files directly, and so can the user's own editor.
+`get_editor_state` reports the folder's name; a browser does not reveal its
+path, so the agent has to be told where it is. The MCP tools remain the better
+route: they check and run what the agent writes and tell the user about it.
+
+`export_scene` runs the same exporter as the Export dialog
+(`src/editor/export.ts`). The file's bytes go from the page to the hub as
+binary WebSocket frames, and the hub writes them where the agent asked
+(`path`: a file or a directory; default `exports/` in the server's working
+directory, `MCE_EXPORT_DIR`, or `~/Downloads` when that is not writable).
 
 ## What the user sees
 
@@ -136,6 +185,8 @@ node tools/agent-e2e.cjs            # client → server → editor in headless C
 | `src/mcp/api.ts`, `src/mcp/docs.ts` | `lookup_api`, `read_docs` |
 | `docs/agents/*.md` | The docs agents read (imported as text, so they ship in the desktop bundle) |
 | `src/editor/agent.ts` | The page's side: connection, method handlers, hidden engine, review proposals |
+| `src/editor/export.ts`, `src/runtime/export.ts` | The exporter shared with the Export dialog, and the frame-by-frame encoders |
+| `src/runtime/textdiff.ts` | Revision fingerprint, find-and-replace edits, line diff (DOM-free, shared by page and server) |
 | `src/editor/AgentPanel.tsx` | Agent popover and the proposal banner |
 | `src/runtime/normalize.ts`, `src/runtime/hints.ts` | Language detection and conversion, repairs, hints (DOM-free) |
 | `shell/main.ts` | Starts the server in the desktop app on request |
@@ -147,8 +198,14 @@ tools by their descriptions.
 
 ## Limits
 
-- One document at a time, like the editor. `open_scene` replaces what is open
-  (the user's edits to other documents are kept).
+- One document is open at a time, like in the editor. `open_scene` switches
+  to another one; every scene keeps its text.
+- What the agent "last saw" is kept per MCP session, in memory. A new session
+  starts by reading the document.
+- `export_scene` exports the open scene only. Its file goes where the agent
+  asks, not into the user's project folder.
+- `add_sound_file` sends the clip through the editor (base64), so it is meant
+  for clips, not long recordings: 40 MB at most.
 - Hints are heuristics on the text, not a type checker. The run in the hidden
   engine is the ground truth.
 - TSX → Civet keeps braces and parentheses where it cannot be sure; the result

@@ -21,7 +21,9 @@ const check = (name, ok, detail = '') => {
 
 (async () => {
   const browser = await chromium.launch();
-  const page = await browser.newPage({viewport: {width: 1440, height: 900}, deviceScaleFactor: Number(process.env.DPR || 1)});
+  // A context of its own, so a second tab can share its storage.
+  const context = await browser.newContext({viewport: {width: 1440, height: 900}, deviceScaleFactor: Number(process.env.DPR || 1)});
+  const page = await context.newPage();
   const problems = [];
   page.on('console', m => {
     if (!['error', 'warning'].includes(m.type())) return;
@@ -33,7 +35,254 @@ const check = (name, ok, detail = '') => {
   const shot = name => page.screenshot({path: path.join(out, `${name}.png`)});
   const settle = (ms = 500) => page.waitForTimeout(ms);
 
+  // A project folder is picked in a system dialog, which a headless browser does not have:
+  // the browser's private file system stands in for it (same handle API).
+  await page.addInitScript(() => {
+    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('my-project', {create: true});
+    // A real folder needs the user's OK again after a reload; the test decides when.
+    const query = FileSystemHandle.prototype.queryPermission;
+    FileSystemHandle.prototype.queryPermission = function (options) {
+      return sessionStorage.getItem('lockFolder') ? Promise.resolve('prompt') : query.call(this, options);
+    };
+    FileSystemHandle.prototype.requestPermission = function () {
+      sessionStorage.removeItem('lockFolder');
+      return Promise.resolve('granted');
+    };
+  });
+  /** The folder's files: text, or a size for anything large or binary. */
+  const disk = () =>
+    page.evaluate(async () => {
+      const files = {};
+      const walk = async (dir, prefix) => {
+        for await (const [name, handle] of dir.entries()) {
+          if (handle.kind !== 'file') await walk(handle, `${prefix}${name}/`);
+          else {
+            const file = await handle.getFile();
+            files[prefix + name] = /\.(civet|tsx)$/.test(name) ? await file.text() : file.size;
+          }
+        }
+      };
+      await walk(await (await navigator.storage.getDirectory()).getDirectoryHandle('my-project', {create: true}), '');
+      return files;
+    });
+  /** Something other than the editor changes the folder (another editor, an agent). */
+  const outside = (name, text) =>
+    page.evaluate(
+      async ([name, text]) => {
+        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('my-project', {create: true});
+        if (text === null) return dir.removeEntry(name);
+        const writable = await (await dir.getFileHandle(name, {create: true})).createWritable();
+        await writable.write(text);
+        await writable.close();
+      },
+      [name, text],
+    );
+  /** A short sine tone as a WAV file. */
+  const tone = (seconds, hz) => {
+    const rate = 22050;
+    const n = Math.round(seconds * rate);
+    const data = Buffer.alloc(44 + n * 2);
+    data.write('RIFF', 0);
+    data.writeUInt32LE(36 + n * 2, 4);
+    data.write('WAVEfmt ', 8);
+    data.writeUInt32LE(16, 16);
+    data.writeUInt16LE(1, 20);
+    data.writeUInt16LE(1, 22);
+    data.writeUInt32LE(rate, 24);
+    data.writeUInt32LE(rate * 2, 28);
+    data.writeUInt16LE(2, 32);
+    data.writeUInt16LE(16, 34);
+    data.write('data', 36);
+    data.writeUInt32LE(n * 2, 40);
+    for (let i = 0; i < n; i++) data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * 12000), 44 + i * 2);
+    return data;
+  };
+
+  // First launch: a scene of the author's own, ready to write in.
+  await page.goto(base + '/');
+  await page.waitForSelector('.block', {timeout: 60000});
+  const sceneName = () => page.locator('.file-tab .scene-name').inputValue();
+  const picked = () => page.locator('.scene-select').evaluate(el => el.selectedOptions[0]?.textContent.trim());
+  check('first launch opens a new scene of your own', (await sceneName()) === 'Untitled' && (await page.locator('.block').count()) === 2 && /Ready/.test(await page.locator('.status').innerText()));
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type('\n@play FadeOut title\n');
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 10000}).catch(() => {});
+  await page.locator('.file-tab .scene-name').fill('My first scene');
+  await page.keyboard.press('Enter');
+  await settle(200);
+  check('a scene can be renamed in place', (await picked()) === 'My first scene', await picked());
+  await shot('00-first-launch');
+
+  // Export: one button, defaults that work, Enter.
+  const exported = async kind => {
+    await page.locator('.export-kinds button').filter({has: page.locator('b', {hasText: new RegExp(`^${kind}$`)})}).click();
+    const [download] = await Promise.all([page.waitForEvent('download', {timeout: 120000}), page.keyboard.press('Enter')]);
+    const file = path.join(out, `export-${download.suggestedFilename()}`);
+    await download.saveAs(file);
+    await page.waitForSelector('.export-done', {timeout: 10000}).catch(() => {});
+    return {name: download.suggestedFilename(), bytes: fs.readFileSync(file)};
+  };
+  await page.getByRole('button', {name: 'Export', exact: true}).click();
+  await page.waitForSelector('.export-modal');
+  check('the export dialog starts on video with its defaults', /MP4 video · 1920 × 1080 · 30 fps · 3\.0 s/.test(await page.locator('.export-summary').innerText()), await page.locator('.export-summary').innerText());
+  await shot('00-export');
+  const video = await exported('Video');
+  // An MP4 starts with an `ftyp` box; frame-exact means 3 s at 30 fps is 90 frames however fast this machine is.
+  check('video export downloads an MP4', video.name === 'my-first-scene.mp4' && video.bytes.subarray(4, 8).toString() === 'ftyp' && video.bytes.length > 5000, `${video.name} ${video.bytes.length} bytes`);
+  const gif = await exported('GIF');
+  check('GIF export downloads a GIF', gif.name === 'my-first-scene.gif' && gif.bytes.subarray(0, 6).toString() === 'GIF89a', `${gif.name} ${gif.bytes.length} bytes`);
+  const image = await exported('Image');
+  check('image export downloads a PNG', image.name === 'my-first-scene-frame.png' && image.bytes.subarray(1, 4).toString() === 'PNG', image.name);
+  const embed = await exported('Web embed');
+  const embedHtml = embed.bytes.toString();
+  check('web embed export downloads one self-contained HTML file', embed.name === 'my-first-scene.html' && /<title>My first scene<\/title>/.test(embedHtml) && /"prelude":true/.test(embedHtml) && !/<script[^>]+src=/.test(embedHtml), `${embed.name} ${embed.bytes.length} bytes`);
+  check('web embed shows the tag to paste', /<iframe src="my-first-scene\.html"/.test(await page.locator('.export-done .copy-line code').innerText().catch(() => '')));
+  await shot('00-export-embed');
+  const code = await exported('Code');
+  check('code export downloads the source', code.name === 'my-first-scene.civet' && /@play FadeOut title/.test(code.bytes.toString()));
+  await page.getByRole('button', {name: 'Done', exact: true}).click();
+  {
+    // The exported embed plays on its own, from a file.
+    const embedPage = await browser.newPage({viewport: {width: 640, height: 360}});
+    const embedProblems = [];
+    embedPage.on('pageerror', e => embedProblems.push(e.message));
+    await embedPage.goto('file://' + path.join(out, 'export-my-first-scene.html'));
+    await embedPage.waitForFunction(() => parseFloat(document.getElementById('fill').style.width) > 5, null, {timeout: 20000}).catch(() => {});
+    check('the exported embed plays from a file', embedProblems.length === 0 && (await embedPage.locator('canvas').count()) === 1 && parseFloat(await embedPage.locator('#fill').evaluate(el => el.style.width)) > 5, embedProblems.join(' | '));
+    await embedPage.screenshot({path: path.join(out, '00-embed-page.png')});
+    await embedPage.close();
+  }
+
+  // Sound: add a clip, use it, and it is in the video and in the web embed.
+  const text = () => page.locator('.cm-content').first().innerText();
+  fs.writeFileSync(path.join(out, 'beep.wav'), tone(0.3, 880));
+  await page.getByRole('button', {name: 'Sounds', exact: true}).click();
+  await page.locator('.add-sound input').setInputFiles(path.join(out, 'beep.wav'));
+  await page.waitForSelector('.asset-list li', {timeout: 10000}).catch(() => {});
+  await page.locator('.cm-line', {hasText: '@play Write title'}).click();
+  await page.getByRole('button', {name: 'Use', exact: true}).click();
+  await page.waitForSelector('.transport [aria-label="Sound"]', {timeout: 10000}).catch(() => {});
+  check('a clip added in the Sounds tab is used with one click', /@add_sound "beep\.wav"/.test(await text()) && (await page.locator('.transport [aria-label="Sound"]').count()) === 1 && (await page.locator('.problems li').count()) === 0);
+  await shot('00-sounds');
+  await page.getByRole('button', {name: 'Export', exact: true}).click();
+  const loud = await exported('Video');
+  const doneText = (await page.locator('.export-done').innerText()).replace(/\s+/g, ' ');
+  // The audio track's codec is named in the file: `mp4a` for AAC, `Opus` where the browser cannot encode AAC.
+  check('the exported video has a sound track', /with sound/.test(doneText) && (loud.bytes.includes('mp4a') || loud.bytes.includes('Opus')), doneText);
+  const loudEmbed = await exported('Web embed');
+  check('the web embed carries the clip inside the file', /data:audio\/(wav|x-wav);base64/.test(loudEmbed.bytes.toString()));
+  await page.getByRole('button', {name: 'Done', exact: true}).click();
+  {
+    const embedPage = await browser.newPage({viewport: {width: 640, height: 360}});
+    await embedPage.goto('file://' + path.join(out, 'export-my-first-scene.html'));
+    await embedPage.waitForSelector('body.has-sound', {timeout: 20000}).catch(() => {});
+    await embedPage.locator('#sound').click().catch(() => {});
+    check('the embed offers a speaker button and starts muted', (await embedPage.locator('body.has-sound.sound-on').count()) === 1);
+    await embedPage.close();
+  }
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type('@add_sound "nope.wav"');
+  await page.waitForSelector('.problems li', {timeout: 10000}).catch(() => {});
+  check('a sound that is not in the project is a problem with a way out', /no sound called "nope\.wav"/.test(await page.locator('.problems').innerText().catch(() => '')));
+  for (let i = 0; i < 21; i++) await page.keyboard.press('Backspace');
+  await page.waitForFunction(() => document.querySelectorAll('.problems li').length === 0, null, {timeout: 10000}).catch(() => {});
+
+  // Project folder: every scene is a file, in both directions.
+  await page.getByRole('button', {name: 'More ways to start a scene'}).click();
+  await page.getByRole('menuitem', {name: 'Save my scenes in a folder…'}).click();
+  await page.waitForSelector('.folder-chip', {timeout: 10000}).catch(() => {});
+  await settle(800);
+  let files = await disk();
+  check('connecting a folder writes the scenes and the sounds into it', /@add_sound "beep\.wav"/.test(files['My first scene.civet'] ?? '') && files['assets/beep.wav'] > 1000, Object.keys(files).join(', '));
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type('# typed in the editor');
+  await settle(900);
+  check('an edit reaches the file as you type', /# typed in the editor/.test((await disk())['My first scene.civet']));
+  await outside('My first scene.civet', (await disk())['My first scene.civet'].replace('"Hello!"', '"Hello, disk!"'));
+  await outside('From outside.tsx', "import {makeScene2D, Circle} from '@canvas-commons/2d';\nimport {waitFor} from '@canvas-commons/core';\n\nexport default makeScene2D(function* (view) {\n  view.add(<Circle size={200} fill=\"#58c4dd\" />);\n  yield* waitFor(1);\n});\n");
+  await page.waitForFunction(() => /Hello, disk!/.test(document.querySelector('.cm-content')?.textContent ?? ''), null, {timeout: 10000}).catch(() => {});
+  check('a file edited outside the editor is reloaded', /Hello, disk!/.test(await text()) && /changed on disk/.test(await page.locator('.notice').innerText().catch(() => '')) && (await page.locator('.problems li').count()) === 0);
+  const mine = () => page.locator('.scene-select optgroup').first().locator('option').allInnerTexts();
+  check('a file added outside the editor becomes a scene', (await mine()).includes('From outside'), (await mine()).join(', '));
+  await shot('00-folder');
+  await page.getByRole('button', {name: 'Export', exact: true}).click();
+  await page.locator('.export-kinds button').filter({has: page.locator('b', {hasText: /^GIF$/})}).click();
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.export-done', {timeout: 60000}).catch(() => {});
+  check('with a folder, exports are saved into it', /my-project\/exports\/my-first-scene\.gif/.test(await page.locator('.export-done').innerText().catch(() => '')) && (await disk())['exports/my-first-scene.gif'] > 1000);
+  await page.getByRole('button', {name: 'Done', exact: true}).click();
+  // After a reload the browser asks again: edits wait in the browser and are written on reconnect.
+  await page.evaluate(() => sessionStorage.setItem('lockFolder', '1'));
+  await page.reload();
+  await page.waitForSelector('.block', {timeout: 60000});
+  await page.waitForSelector('.folder-chip.locked', {timeout: 10000}).catch(() => {});
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type(' (and while locked)');
+  await settle(700);
+  const lockedState = (await page.locator('.folder-chip.locked').count()) === 1 && !/while locked/.test((await disk())['My first scene.civet']);
+  await page.locator('.folder-chip.locked').click();
+  await page.waitForSelector('.folder-chip:not(.locked)', {timeout: 10000}).catch(() => {});
+  await settle(800);
+  check('a locked folder keeps edits in the browser and writes them on reconnect', lockedState && /while locked/.test((await disk())['My first scene.civet']));
+  await outside('From outside.tsx', null);
+  await page.waitForFunction(() => ![...document.querySelectorAll('.scene-select option')].some(o => o.textContent.trim() === 'From outside'), null, {timeout: 10000}).catch(() => {});
+  check('a file deleted outside the editor leaves the list', !(await mine()).includes('From outside'));
+  await page.locator('.folder-chip').click();
+  await page.getByRole('menuitem', {name: 'Stop saving to this folder'}).click();
+  await settle(400);
+  check('leaving the folder keeps the scenes in the browser and the files on disk', (await page.locator('.folder-chip').count()) === 0 && (await mine()).includes('My first scene') && 'My first scene.civet' in (await disk()));
+
+  // New scenes sit next to each other; nothing is overwritten, and a reload comes back to the last one.
+  await page.getByRole('button', {name: '+ New', exact: true}).click();
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 2, null, {timeout: 10000}).catch(() => {});
+  check('New adds a second scene', (await sceneName()) === 'Untitled' && (await page.locator('.scene-select optgroup').first().locator('option').count()) === 2);
+  // Undo belongs to a scene: it must not bring the previous scene's text into this one.
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+z');
+  await settle(500);
+  check('undo does not cross from one scene into another', !/FadeOut title/.test(await page.locator('.cm-content').first().innerText()) && (await page.locator('.block').count()) === 2);
+  await page.locator('.scene-select').selectOption({label: 'My first scene'});
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 3, null, {timeout: 10000}).catch(() => {});
+  check('the first scene kept its edits', /@play FadeOut title/.test(await page.locator('.cm-content').first().innerText()));
+  await page.reload();
+  await page.waitForSelector('.block', {timeout: 60000});
+  check('a reload reopens the scene you were on', (await sceneName()) === 'My first scene' && (await page.locator('.block').count()) === 3);
+  await page.getByRole('button', {name: 'More ways to start a scene'}).click();
+  await shot('00-new-menu');
+  await page.getByRole('menuitem', {name: 'Delete this scene…'}).click();
+  await page.getByRole('menuitem', {name: /for good/}).click();
+  await page.waitForFunction(() => document.querySelectorAll('.block').length === 2, null, {timeout: 10000}).catch(() => {});
+  check('deleting a scene opens the next one', (await sceneName()) === 'Untitled' && (await page.locator('.scene-select optgroup').first().locator('option').count()) === 1);
+  {
+    // Two tabs share the list of scenes: neither undoes what the other did.
+    const count = () => page.locator('.scene-select optgroup').first().locator('option').count();
+    const other = await context.newPage();
+    await other.goto(base + '/');
+    await other.waitForSelector('.block', {timeout: 60000});
+    await other.getByRole('button', {name: '+ New', exact: true}).click();
+    await other.locator('.file-tab .scene-name').fill('From the other tab');
+    await other.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelectorAll('.scene-select optgroup')[0].querySelectorAll('option').length === 2, null, {timeout: 5000}).catch(() => {});
+    const seen = (await count()) === 2;
+    await page.locator('.file-tab .scene-name').fill('Kept');
+    await page.keyboard.press('Enter');
+    await settle(300);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('mce.scenes.v1')).map(r => r.name).sort());
+    check('a scene made in another tab appears here and survives a save from this tab', seen && stored.join(',') === 'From the other tab,Kept', stored.join(','));
+    await other.getByRole('button', {name: 'More ways to start a scene'}).click();
+    await other.getByRole('menuitem', {name: 'Delete this scene…'}).click();
+    await other.getByRole('menuitem', {name: /for good/}).click();
+    await page.waitForFunction(() => document.querySelectorAll('.scene-select optgroup')[0].querySelectorAll('option').length === 1, null, {timeout: 5000}).catch(() => {});
+    check('a scene deleted in another tab leaves the list here', (await count()) === 1);
+    await other.close();
+  }
+
   await page.goto(base + '/#example=square-to-circle');
+  await page.reload();
   await page.waitForSelector('.block', {timeout: 60000});
   check('timeline has one block per play call', (await page.locator('.block').count()) === 3);
   check('status is ready', /Ready/.test(await page.locator('.status').innerText()));
@@ -109,16 +358,17 @@ const check = (name, ok, detail = '') => {
   await settle(300);
   check('scrubber timeline shows a slider', (await page.locator('.tl-scrubber input').count()) === 1);
   await page.getByRole('button', {name: 'Blocks', exact: true}).click();
-  await page.getByRole('button', {name: 'Close Lab'}).click();
   for (const layout of ['Split', 'Stage', 'Studio']) {
-    await page.locator('.topbar').getByRole('button', {name: layout, exact: true}).click();
+    await page.locator('.lab').getByRole('button', {name: layout, exact: true}).click();
     await settle(500);
     await shot(`06-layout-${layout.toLowerCase()}`);
   }
   check('layout switch keeps the preview canvas', (await page.locator('.canvas-slot canvas').count()) === 1);
+  await page.getByRole('button', {name: 'Close Lab'}).click();
 
   // Import a Manim (Python) scene.
-  await page.getByRole('button', {name: 'Import Python'}).click();
+  await page.getByRole('button', {name: 'More ways to start a scene'}).click();
+  await page.getByRole('menuitem', {name: 'Import Manim Python…'}).click();
   await page.getByRole('button', {name: 'Try a gallery sample'}).click();
   await settle(300);
   check('Python import previews the Civet translation', /class MovingFrameBox extends Scene/.test(await page.locator('.modal pre').innerText()));
@@ -126,6 +376,7 @@ const check = (name, ok, detail = '') => {
   await page.getByRole('button', {name: 'Convert and open'}).click();
   await page.waitForFunction(() => document.querySelectorAll('.block').length === 5, null, {timeout: 15000}).catch(() => {});
   check('imported Python scene runs', (await page.locator('.block').count()) === 5 && (await page.locator('.problems li').count()) === 0);
+  check('an imported scene becomes a scene of your own', (await page.locator('.file-tab .scene-name').count()) === 1);
   await page.locator('.block').nth(3).click();
   await settle(600);
   await shot('08-imported-scene');

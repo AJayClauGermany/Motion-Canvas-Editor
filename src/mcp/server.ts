@@ -7,8 +7,9 @@
  * run a scene, go to the editor page through an `EditorLink`.
  */
 import {McpServer, ResourceTemplate} from '@modelcontextprotocol/sdk/server/mcp.js';
-import {existsSync, readdirSync, readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {accessSync, constants, existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
+import {homedir} from 'node:os';
+import {basename, join, resolve} from 'node:path';
 import {z} from 'zod';
 import {apiNames} from '../manim';
 import {compileScene, defaultCompileOptions, Diagnostic} from '../runtime/compile';
@@ -16,9 +17,10 @@ import {civetToTsx, Language} from '../runtime/convert';
 import {knownNames} from '../runtime/dialect';
 import {Hint, sceneHints} from '../runtime/hints';
 import {detectLanguage, InputLanguage, normalizeSource} from '../runtime/normalize';
+import {formatDiff} from '../runtime/textdiff';
 import {lookupApi, searchApi} from './api';
 import {readTopic, topicIndex, topics} from './docs';
-import type {EditorMethod, EditorMethods, EditResult, ExampleInfo, RunReport, StepInfo} from './protocol';
+import type {EditorMethod, EditorMethods, EditorSnapshot, EditResult, ExampleInfo, ExportReport, RunReport, SaveTarget, StepInfo} from './protocol';
 
 export const SERVER_NAME = 'motion-canvas-editor';
 export const SERVER_VERSION = '0.1.0';
@@ -42,7 +44,9 @@ export const INSTRUCTIONS = `Motion Canvas Editor: an animation editor (Canvas C
 - Manim style: Manim's vocabulary on this engine. \`from manim import *\` (Civet) or \`import {...} from 'manim'\` (TSX), a class extending Scene with construct(), play/wait.
 - Canvas Commons style: \`export default makeScene2D(function* (view) {...})\` with JSX nodes, refs, signals; every \`yield*\` statement is a timeline step.
 
-Workflow: get_editor_state (open scene, its language, problems, timeline) → change it with edit_scene (exact old/new text, in the document's language) or write_scene (whole scene, any language) → read the returned problems, hints and run report → render_preview to look at frames, inspect_frame for positions. Fix until there are no problems.
+Workflow, the same one the user follows in the editor: get_editor_state (open scene, its language, problems, timeline) → change it with edit_scene (exact old/new text, in the document's language) or write_scene (whole scene, any language), or start a new scene next to it with open_scene → read the returned problems, hints and run report → render_preview to look at frames, inspect_frame for positions. Fix until there are no problems → export_scene writes the result to a file (video by default; also gif, a web embed, an image). It needs no options. Sound: add_sound_file brings a clip into the project, and a scene plays it by file name (\`add_sound "click.mp3"\`); it ends up in the video and the web embed.
+
+You share the document with the user, who may type at any time. Every tool that touches the open scene first tells you what changed in the editor since you last read it; take that as their current intent. edit_scene applies to their latest text. write_scene will not replace changes you have not been shown.
 
 Languages: when unsure of Civet, write TSX: write_scene, open_scene and check_scene convert TSX, Civet, mixed code and Manim Python to the document's language. Civet pitfalls: \`x => y\` means \`x(=> y)\` (write \`(x) => y\`); keyword arguments are \`run_time: 2\` (Civet) or a trailing \`{run_time: 2}\` (TSX), never \`run_time=2\`; \`#\` starts a comment.
 
@@ -100,8 +104,50 @@ function formatEdit(r: EditResult): string {
     if (hints) lines.push(hints);
     if (r.run) lines.push(formatRun(r.run));
   }
-  if (r.source !== undefined) lines.push('Current source:', '```' + r.language, r.source, '```');
+  if (!r.applied && r.source !== undefined) lines.push('Current source:', '```' + r.language, r.source, '```');
   return lines.join('\n');
+}
+
+const kB = (n: number) => (n < 1e6 ? `${Math.max(1, Math.round(n / 1e3))} kB` : `${(n / 1e6).toFixed(1)} MB`);
+
+function formatExport(r: ExportReport): string {
+  const what = r.format === 'video' ? `${r.extension.toUpperCase()} video${r.codec ? ` (${r.codec === 'avc' ? 'H.264' : r.codec.toUpperCase()})` : ''}` : r.format === 'gif' ? 'Animated GIF' : r.format === 'embed' ? 'Web embed (one HTML file with a player)' : 'PNG image';
+  const facts = [what, r.width && r.height ? `${r.width} × ${r.height}` : '', r.fps && r.format !== 'image' && r.format !== 'embed' ? `${r.fps} fps` : '', r.seconds ? `${r.seconds.toFixed(2)} s` : '', r.frames && r.frames > 1 ? `${r.frames} frames` : '', kB(r.bytes)].filter(Boolean);
+  const lines = [r.path ? `Exported to ${r.path}` : `Exported ${r.fileName}, but it was not saved: ${r.saveError ?? 'unknown error'}`, `${facts.join(', ')}.`];
+  if (r.realtime) lines.push('Recorded while playing, because this webview cannot encode frame by frame: frames may be dropped. The browser build (Chromium) renders every frame.');
+  if (r.sound?.clips) lines.push(`Sound: ${r.sound.clips} clip${r.sound.clips === 1 ? '' : 's'}${r.sound.codec ? ` (${r.sound.codec === 'aac' ? 'AAC' : r.sound.codec})` : ''}.`);
+  if (r.sound?.note) lines.push(r.sound.note);
+  if (r.snippet) lines.push('To show it on a web page, put the file next to the page and paste:', r.snippet, 'Options go in the URL hash, e.g. `scene.html#autoplay=0&loop=0&controls=0`.');
+  return lines.join('\n');
+}
+
+/** Where exports go when the agent names no place. */
+function defaultExportDir(): string {
+  if (process.env.MCE_EXPORT_DIR) return resolve(process.env.MCE_EXPORT_DIR);
+  const cwd = process.cwd();
+  try {
+    // A desktop app's working directory is not a place for the user's files.
+    if (cwd !== '/' && !/\.app\/|[\\/]bin$/.test(cwd)) {
+      accessSync(cwd, constants.W_OK);
+      return join(cwd, 'exports');
+    }
+  } catch {
+    // Not writable.
+  }
+  return join(homedir(), 'Downloads');
+}
+
+/** A directory (the editor names the file) or a file, from the agent's `path`. */
+export function saveTarget(path: string | undefined): SaveTarget {
+  if (!path) return {dir: defaultExportDir()};
+  const abs = resolve(path.replace(/^~(?=$|[\\/])/, homedir()));
+  let isDir = /[\\/]$/.test(path) || !/\.[a-z0-9]{2,5}$/i.test(abs);
+  try {
+    if (existsSync(abs)) isDir = statSync(abs).isDirectory();
+  } catch {
+    // Treat it by its spelling.
+  }
+  return isDir ? {dir: abs} : {file: abs};
 }
 
 const text = (t: string) => ({content: [{type: 'text' as const, text: t}]});
@@ -163,6 +209,60 @@ export function createMcpServer(link: EditorLink): McpServer {
       return failure(`The editor reported an error: ${(e as Error).message ?? e}`);
     }
   };
+
+  // ------------------------------------------------ sharing the document
+
+  /**
+   * The text of the open document as this agent knows it: what a tool last
+   * showed it (in full, or as a diff on top of what it had), or what it wrote
+   * itself. Null until it has been shown a scene.
+   */
+  let seen: {slug: string; revision: string; source: string} | null = null;
+
+  interface CatchUp {
+    state: EditorSnapshot;
+    /** What to tell the agent before anything else; empty when nothing changed. */
+    note: string;
+    /** `first`: the agent has not been shown this scene. `same`: it knows exactly this text. `edited`: the text changed. `switched`: another scene is open. */
+    kind: 'first' | 'same' | 'edited' | 'switched';
+    /**
+     * Call once the answer carrying `note` is certain to reach the agent.
+     * `full`: the answer shows the whole source. Without that, a diff brings
+     * the agent up to date only if it knew the text the diff starts from.
+     */
+    shown(full: boolean): void;
+  }
+
+  /**
+   * Read the open document and work out what changed in the editor since
+   * this agent last saw it: the user typed, or opened another scene. Nothing
+   * is recorded until `shown` is called, so a tool that fails after this, or
+   * one that never shows the text, leaves the agent as uninformed as it was.
+   */
+  const catchUp = async (as?: Language): Promise<CatchUp> => {
+    const state = await link.call('state', {includeSource: true, as});
+    const now = {slug: state.document.slug, revision: state.revision, source: state.source ?? ''};
+    const kind: CatchUp['kind'] = !seen ? 'first' : seen.slug !== now.slug ? 'switched' : seen.revision !== now.revision ? 'edited' : 'same';
+    const note =
+      kind === 'switched'
+        ? `Since you last looked, another scene was opened in the editor: ${state.document.title} (${state.document.slug}). You have not been shown it: read it with get_editor_state.`
+        : kind === 'edited'
+          ? ['Since you last read it, the scene was edited in the editor (by the user, unless another agent is connected). The changes:', '```diff', formatDiff(seen!.source, now.source), '```'].join('\n')
+          : '';
+    return {
+      state,
+      note,
+      kind,
+      shown(full) {
+        if (full || kind === 'same' || kind === 'edited') seen = now;
+      },
+    };
+  };
+  /** The agent's own change to a text it knew: it knows the result too. */
+  const sawEdit = (r: EditResult) => {
+    if (seen && r.applied && r.source !== undefined) seen = {...seen, revision: r.revision, source: r.source};
+  };
+  const withNote = (note: string, body: string) => (note ? `${note}\n\n${body}` : body);
 
   // ---------------------------------------------------------- knowledge
 
@@ -288,7 +388,11 @@ export function createMcpServer(link: EditorLink): McpServer {
       const notes: string[] = [];
       if (source === undefined) {
         try {
-          const state = await link.call('state', {includeSource: true});
+          const c = await catchUp();
+          if (c.note) notes.push(c.note);
+          // Everything below ends in a text answer that includes the note.
+          c.shown(false);
+          const state = c.state;
           source = state.source ?? '';
           target = state.document.language;
         } catch (e) {
@@ -338,11 +442,22 @@ export function createMcpServer(link: EditorLink): McpServer {
     },
     async ({include_source, as}) =>
       viaEditor(
-        () => link.call('state', {includeSource: include_source !== false, as}),
-        s => {
+        () => catchUp(as),
+        c => {
+          const {state: s, note} = c;
+          c.shown(include_source !== false);
           const d = s.document;
+          const others = s.myScenes.filter(m => m.slug !== d.slug);
           const lines = [
-            `Document: ${d.title} (${d.slug}${d.fileName ? `, file ${d.fileName}` : ''}${d.dirty ? ', edited' : ''}).`,
+            note,
+            `Document: ${d.title} (${d.slug}; ${d.kind === 'scene' ? `one of the user's own scenes${d.fileName ? `, ${d.fileName}` : ''}` : `a bundled example${d.dirty ? ', edited by the user' : ''}`}).`,
+            others.length ? `The user's other scenes (open_scene \`scene\`): ${others.slice(0, 12).map(m => `${m.title} (${m.slug})`).join(', ')}${others.length > 12 ? ', …' : ''}.` : '',
+            s.folder
+              ? s.folder.locked
+                ? `Project folder: "${s.folder.name}", but the browser is waiting for the user to reconnect it; edits are kept in the browser until then.`
+                : `Project folder: the user's scenes are files in a folder named "${s.folder.name}" (one .civet or .tsx per scene, sounds in assets/, exports in exports/). The editor writes every change there and picks up changes made to the files.`
+              : '',
+            s.sounds.length ? `Sounds (use by name: \`add_sound "name"\` in a Manim scene, \`sound("name").play()\` from @canvas-commons/core in a native one): ${s.sounds.map(a => a.name).join(', ')}.` : '',
             `Language: ${d.language}. Style: ${d.vocabulary === 'manim' ? 'Manim' : 'Canvas Commons (native)'}.${d.language === 'civet' ? ` Dialect: ${d.dialect.naming}_case names, ${d.dialect.yieldStyle} yield*, ${d.dialect.selfStyle === 'at' ? '@' : 'self.'} for the scene, operator overloading ${d.dialect.operators}.` : ''}`,
             `Revision: ${s.revision}. Edits: ${s.editMode === 'review' ? 'proposed to the user, who accepts or rejects them' : 'applied directly (the user can undo)'}.`,
             `Status: ${s.status}. Time ${fmtTime(s.time)} of ${fmtTime(s.duration)}. Cursor on line ${s.cursorLine}.${s.selection ? ` Selected: ${s.selection.name} (${s.selection.kind}${s.selection.line ? `, line ${s.selection.line}` : ''}).` : ''}`,
@@ -350,7 +465,7 @@ export function createMcpServer(link: EditorLink): McpServer {
             formatDiagnostics(s.diagnostics),
             formatSteps(s.steps),
           ];
-          if (s.source !== undefined) lines.push('', 'Source:', '```' + d.language, numbered(s.source), '```');
+          if (include_source !== false && s.source !== undefined) lines.push('', 'Source:', '```' + d.language, numbered(s.source), '```');
           if (s.sourceAs) {
             lines.push('', `As ${s.sourceAs.language}:`);
             if ('code' in s.sourceAs) lines.push('```' + s.sourceAs.language, s.sourceAs.code, '```');
@@ -374,7 +489,21 @@ export function createMcpServer(link: EditorLink): McpServer {
       },
     },
     async ({edits, base_revision, summary}) =>
-      viaEditor(() => link.call('editSource', {edits, baseRevision: base_revision, summary}, 10 * 60_000), r => ({...text(formatEdit(r)), isError: !r.applied})),
+      viaEditor(
+        async () => {
+          const c = await catchUp();
+          // Edits are written against a text; never apply them to a scene the agent has not read.
+          if (c.kind === 'switched') return {note: c.note, r: null};
+          const r = await link.call('editSource', {edits, baseRevision: base_revision, summary}, 10 * 60_000);
+          c.shown(false);
+          sawEdit(r);
+          return {note: c.note, r};
+        },
+        ({note, r}) =>
+          r
+            ? {...text(withNote(note, formatEdit(r))), isError: !r.applied}
+            : failure(`${note} Nothing was changed: your edits were written for the scene that was open before.`),
+      ),
   );
 
   server.registerTool(
@@ -382,7 +511,7 @@ export function createMcpServer(link: EditorLink): McpServer {
     {
       title: 'Replace the open scene',
       description:
-        "Replace the whole open document. `code` may be Civet, TSX, mixed, or Manim Python: it is converted to the document's language and repaired where it would compile to something else (the result says what changed). Prefer edit_scene for small changes: it keeps the user's formatting. Returns compile problems, hints and a run of the result.",
+        "Replace the whole open document. `code` may be Civet, TSX, mixed, or Manim Python: it is converted to the document's language and repaired where it would compile to something else (the result says what changed). Prefer edit_scene for small changes: it keeps the user's formatting and merges with what they typed. To start something new without touching the open scene, use open_scene with `code`. If the document holds work of the user's that you have not been shown, the first call returns it instead of replacing it. Returns compile problems, hints and a run of the result.",
       inputSchema: {
         code: z.string(),
         language: languageArg,
@@ -392,8 +521,33 @@ export function createMcpServer(link: EditorLink): McpServer {
     },
     async ({code, language, base_revision, summary}) =>
       viaEditor(
-        () => link.call('setSource', {code, language: language ?? 'auto', baseRevision: base_revision, summary}, 10 * 60_000),
-        r => ({...text(formatEdit(r)), isError: !r.applied}),
+        async () => {
+          const c = await catchUp();
+          const {state, note} = c;
+          const d = state.document;
+          const usersWork = d.kind === 'scene' || d.dirty;
+          // Replacing everything is only safe on a text the agent knows.
+          if (c.kind !== 'same' && usersWork && base_revision !== state.revision) return {c, note, state, r: null};
+          const r = await link.call('setSource', {code, language: language ?? 'auto', baseRevision: base_revision, summary}, 10 * 60_000);
+          // It wrote the whole text; otherwise the answer carries the note (and the current text on a conflict).
+          if (r.applied && r.source !== undefined) seen = {slug: d.slug, revision: r.revision, source: r.source};
+          else c.shown(r.source !== undefined);
+          return {c, note, state, r};
+        },
+        ({c, note, state, r}) =>
+          r
+            ? {...text(withNote(note, formatEdit(r))), isError: !r.applied}
+            : failure(
+                [
+                  // The answer below shows the whole scene: from here on the agent knows it.
+                  (c.shown(true), c.kind === 'edited' ? note : `You have not been shown the open scene (${state.document.title}), and write_scene would replace all of it.`),
+                  'Nothing was changed. The scene as it is now:',
+                  '```' + state.document.language,
+                  numbered(state.source ?? ''),
+                  '```',
+                  'Use edit_scene to change parts of it, open_scene with `code` to start a new scene next to it, or call write_scene again to replace it all.',
+                ].join('\n'),
+              ),
       ),
   );
 
@@ -402,19 +556,26 @@ export function createMcpServer(link: EditorLink): McpServer {
     {
       title: 'Open a scene in the editor',
       description:
-        "Open a bundled example (`example`: a slug from get_example) or new code (`code`, any language) as a new scratch document. The user's edits to other documents are kept. New code opens in the editor's current language.",
+        "Open a bundled example (`example`: a slug from get_example), one of the user's own scenes (`scene`: its name or slug, listed by get_editor_state), or new code (`code`, any language) as a new scene of the user's. Nothing is overwritten: the scene that was open stays in the user's list. New code opens in the editor's current language.",
       inputSchema: {
         example: z.string().optional(),
+        scene: z.string().optional().describe("One of the user's own scenes, by name or slug."),
         code: z.string().optional(),
         language: languageArg,
-        name: z.string().optional().describe('File name to show, e.g. "intro.civet".'),
+        name: z.string().optional().describe('A name for the new scene, e.g. "Intro".'),
       },
     },
-    async ({example, code, language, name}) => {
-      if (!example && code === undefined) return failure('Pass `example` or `code`.');
+    async ({example, scene, code, language, name}) => {
+      if (!example && !scene && code === undefined) return failure('Pass `example`, `scene` or `code`.');
       return viaEditor(
-        () => link.call('open', {example, code, language: language ?? 'auto', name}, 60_000),
-        s => text([`Opened ${s.document.title} (${s.document.language}, revision ${s.revision}).`, formatDiagnostics(s.diagnostics), formatSteps(s.steps)].join('\n')),
+        async () => {
+          const s = await link.call('open', {example, scene, code, language: language ?? 'auto', name}, 60_000);
+          // New code is the agent's own text; an example or a scene of the user's has yet to be read.
+          seen = null;
+          if (code !== undefined && !example && !scene) (await catchUp()).shown(true);
+          return s;
+        },
+        s => text([`Opened ${s.document.title} (${s.document.slug}, ${s.document.language}, revision ${s.revision}).`, formatDiagnostics(s.diagnostics), formatSteps(s.steps)].join('\n')),
       );
     },
   );
@@ -436,12 +597,20 @@ export function createMcpServer(link: EditorLink): McpServer {
     },
     async ({code, language, times, count, width}) =>
       viaEditor(
-        () => link.call('render', {code, language: language ?? 'auto', times, count, width}, 120_000),
-        r => {
+        async () => {
+          const c = code === undefined ? await catchUp() : null;
+          const r = await link.call('render', {code, language: language ?? 'auto', times, count, width}, 120_000);
+          c?.shown(false);
+          return {note: c?.note ?? '', r};
+        },
+        ({note, r}) => {
           const caption = [
+            note,
             `Frames: ${r.frames.map(f => `${fmtTime(f.time)}${f.step ? ` (${f.step})` : ''}`).join(', ')}.`,
             formatRun(r.run),
-          ].join('\n');
+          ]
+            .filter(Boolean)
+            .join('\n');
           const data = r.image.replace(/^data:image\/png;base64,/, '');
           return {content: [{type: 'image' as const, data, mimeType: 'image/png'}, {type: 'text' as const, text: caption}]};
         },
@@ -463,8 +632,13 @@ export function createMcpServer(link: EditorLink): McpServer {
     },
     async ({time, code, language}) =>
       viaEditor(
-        () => link.call('inspect', {time, code, language: language ?? 'auto'}, 60_000),
-        r => {
+        async () => {
+          const c = code === undefined ? await catchUp() : null;
+          const r = await link.call('inspect', {time, code, language: language ?? 'auto'}, 60_000);
+          c?.shown(false);
+          return {note: c?.note ?? '', r};
+        },
+        ({note, r}) => {
           const round = (n: number) => Math.round(n * 100) / 100;
           const items = r.items.map(i => {
             const b = i.bounds ? ` [${i.bounds.map(round).join(', ')}]` : '';
@@ -473,6 +647,7 @@ export function createMcpServer(link: EditorLink): McpServer {
           });
           return text(
             [
+              note,
               `At ${fmtTime(r.time)} (bounds are [left, bottom, right, top] in Manim units):`,
               ...(items.length ? items : ['(nothing on screen)']),
               r.warnings.length ? ['Layout warnings:', ...r.warnings.map(w => `- ${w}`)].join('\n') : 'Layout warnings: none.',
@@ -483,6 +658,63 @@ export function createMcpServer(link: EditorLink): McpServer {
           );
         },
       ),
+  );
+
+  server.registerTool(
+    'export_scene',
+    {
+      title: 'Export the open scene',
+      description:
+        'Export the scene open in the editor to a file, as the user does with the Export button. `video`: MP4 (H.264), 1080p at 30 fps, every frame rendered exactly. `gif`: a looping GIF, 640 px wide. `embed`: one self-contained HTML file that plays the scene, with the <iframe> tag to paste into a web page. `image`: one frame as PNG. Every option has a default, so no arguments gives a video. The file is written on this machine and its path returned. Export only a scene that runs without problems.',
+      inputSchema: {
+        format: z.enum(['video', 'gif', 'embed', 'image']).optional().describe('Default video.'),
+        path: z
+          .string()
+          .optional()
+          .describe("A file or a directory to save to. Relative paths start at this server's working directory. Default: its `exports` directory, with the file named after the scene. The extension always follows the format."),
+        time: z.number().min(0).optional().describe("image: the time of the frame in seconds. Default: the user's playhead."),
+        height: z.number().int().min(180).max(2160).optional().describe('video, image: height in pixels; the width follows 16:9. Default 1080.'),
+        fps: z.number().int().min(1).max(120).optional().describe('video: default 30. gif: default 20.'),
+        width: z.number().int().min(120).max(1920).optional().describe('gif: width in pixels. Default 640.'),
+      },
+    },
+    async ({format, path, time, height, fps, width}) =>
+      viaEditor(
+        async () => {
+          const c = await catchUp();
+          const r = await link.call('export', {format: format ?? 'video', height, fps, width, time, saveTo: saveTarget(path)}, 30 * 60_000);
+          c.shown(false);
+          return {note: c.note, r};
+        },
+        ({note, r}) => ({...text(withNote(note, formatExport(r))), isError: !r.path}),
+      ),
+  );
+
+  server.registerTool(
+    'add_sound_file',
+    {
+      title: 'Add a sound clip to the project',
+      description:
+        'Add a sound file from this machine (mp3, wav, ogg, m4a, aac, flac, opus) to the project open in the editor, as the user does in the Sounds tab. Scenes then play it by file name: `add_sound "click.mp3"` (optionally `time_offset: 0.5, gain: -6`, in seconds and decibels) in a Manim scene, or `sound("click.mp3").play()` with `sound` from @canvas-commons/core in a native one (it also has `.gain(dB)`, `.trim(start, end)`, `.playbackRate(rate)`). The sound becomes part of exported videos and web embeds. get_editor_state lists the sounds already there.',
+      inputSchema: {
+        path: z.string().describe("The sound file. Relative paths start at this server's working directory."),
+        name: z.string().optional().describe('The name scenes will use, with its extension. Default: the file name.'),
+      },
+    },
+    async ({path, name}) => {
+      const file = resolve(path.replace(/^~(?=$|[\\/])/, homedir()));
+      let data: Buffer;
+      try {
+        if (statSync(file).size > 40 * 1024 * 1024) return failure('That file is larger than 40 MB: too large for a sound clip.');
+        data = readFileSync(file);
+      } catch (e) {
+        return failure(`Could not read ${file}: ${(e as Error).message}`);
+      }
+      return viaEditor(
+        () => link.call('addAsset', {name: name ?? basename(file), data: data.toString('base64')}, 60_000),
+        r => text(`Added ${r.name} (${kB(r.bytes)}). Play it with \`add_sound "${r.name}"\` (Manim style) or \`sound("${r.name}").play()\` (Canvas Commons style).\nSounds in the project: ${r.sounds.map(s => s.name).join(', ')}.`),
+      );
+    },
   );
 
   server.registerTool(
@@ -625,6 +857,7 @@ export function createMcpServer(link: EditorLink): McpServer {
               '2. lookup_api for every class you are not sure exists here.',
               '3. Write it (TSX is fine if you are unsure of Civet), check_scene, fix, then open_scene with the code.',
               '4. render_preview, adjust layout and timing, and summarise the result for the user.',
+              '5. If they asked for a file (a video, a GIF, something to embed), export_scene.',
             ].join('\n'),
           },
         },

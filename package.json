@@ -38,8 +38,10 @@
     "acorn": "^8.19.0",
     "chroma-js": "^3.3.0",
     "codemirror": "^6.0.2",
+    "gifenc": "1.0.3",
     "magic-string": "^1.4.5",
     "mathjax-full": "3.2.2",
+    "mediabunny": "1.65.2",
     "solid-js": "2.0.3",
     "sucrase": "^3.35.1",
     "zod": "4.6.7"

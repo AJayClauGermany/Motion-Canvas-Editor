@@ -7,7 +7,9 @@
 import {apiNames} from './manim';
 import {compileScene, defaultCompileOptions} from './runtime/compile';
 import {civetToTsx, tsxToCivet} from './runtime/convert';
+import {setAssetUrls} from './runtime/assets';
 import {Engine, ItemId, OutlineNode, Timeline} from './runtime/engine';
+import type {RenderControl, RenderOptions} from './runtime/export';
 
 /**
  * Agent mode. The iframe usually runs while the editor tab is in the
@@ -16,7 +18,8 @@ import {Engine, ItemId, OutlineNode, Timeline} from './runtime/engine';
  * player instead, but only while a job runs (`begin`/`end`); between jobs
  * its frame requests wait, so an idle iframe costs nothing.
  */
-const agentMode = new URLSearchParams(location.search).has('agent');
+const params = new URLSearchParams(location.search);
+const agentMode = params.has('agent');
 let busy = 0;
 const channel = new MessageChannel();
 const frameRequests = new Map<number, FrameRequestCallback>();
@@ -60,6 +63,9 @@ const sleep = (ms: number) =>
     : new Promise<void>(resolve => setTimeout(resolve, ms));
 
 const engine = new Engine();
+// An export runs in a page of its own, at the size and frame rate of the result.
+if (Number(params.get('fps')) > 0) engine.fps = Number(params.get('fps'));
+if (Number(params.get('scale')) > 0) engine.resolutionScale = Number(params.get('scale'));
 document.getElementById('stage')!.append(engine.canvas);
 
 let timeline: Timeline | null = null;
@@ -238,5 +244,48 @@ const agent = {
       for (const n of engine.outline()) walk(n, 0);
       return {time, items, run};
     }),
+  /**
+   * Run `source` and export it frame by frame (see runtime/export.ts). The
+   * page is loaded with `?fps=…&scale=…` for the size of the result.
+   */
+  export: (
+    source: string,
+    options = {},
+    opts: RenderOptions & {scene?: string},
+    onProgress: (p: number) => void = () => {},
+    control: RenderControl = {cancelled: false},
+  ) =>
+    job(async () => {
+      const r = await api.run(source, options, opts.scene);
+      const run = report(r.ok, r.diagnostics);
+      if (!run.ok) return {run};
+      const {renderScene} = await import('./runtime/export');
+      let first = true;
+      const seek = (frame: number) => {
+        // The first seek, and any seek backwards, replays from the start.
+        if (first || frame <= engine.frame) {
+          first = false;
+          return api.seek(frame);
+        }
+        return new Promise<void>((resolve, reject) => {
+          const watchdog = setTimeout(() => {
+            off();
+            reject(new Error(`The scene stopped rendering at frame ${frame}.`));
+          }, 20_000);
+          const off = engine.on('frame', f => {
+            if (f !== frame) return;
+            clearTimeout(watchdog);
+            off();
+            resolve();
+          });
+          engine.seek(frame);
+        });
+      };
+      const output = await renderScene({engine, frames: duration, seek}, opts, onProgress, control);
+      return {run, output};
+    }),
 };
+/** The project's assets (name → URL), so scenes here find the same sound clips as in the editor. */
+(agent as any).setAssets = setAssetUrls;
+(api as any).setAssets = setAssetUrls;
 (window as any).harnessAgent = agent;

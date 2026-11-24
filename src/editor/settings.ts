@@ -34,6 +34,7 @@ export interface Settings {
   theme: 'midnight' | 'slate' | 'paper';
   quality: 'draft' | 'standard' | 'high';
   agentEdits: 'apply' | 'review';
+  startup: 'scene' | 'example';
 }
 
 export const defaults: Settings = {
@@ -52,6 +53,7 @@ export const defaults: Settings = {
   theme: 'midnight',
   quality: 'standard',
   agentEdits: 'apply',
+  startup: 'scene',
 };
 
 export const flags: Flag[] = [
@@ -109,6 +111,16 @@ export const flags: Flag[] = [
         label: 'TSX',
         hint: 'Plain TypeScript + JSX, compiled without Civet. Works for both styles; switching converts the open scene.',
       },
+    ],
+  },
+  {
+    key: 'startup',
+    group: 'Editor',
+    title: 'On launch',
+    question: 'Should the editor open on your own work, or on a demo?',
+    options: [
+      {value: 'scene', label: 'Your scene', hint: 'The scene you worked on last; a new blank one the first time. Examples are one click away in the scene list.'},
+      {value: 'example', label: 'Gallery example', hint: 'The first bundled example, as a demo of what the editor does.'},
     ],
   },
   {

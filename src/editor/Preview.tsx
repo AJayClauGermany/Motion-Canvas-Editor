@@ -131,8 +131,18 @@ export function Preview() {
           frame {ed.frame()} · {ed.fps()} fps
         </span>
         <span class="spacer" />
-        <label class="speed">
-          Speed
+        <Show when={ed.soundCount() > 0}>
+          <button
+            class={['icon', {on: ed.audible()}]}
+            onClick={() => ed.setAudible(!ed.audible())}
+            title={ed.audible() ? 'Sound on (click to mute the preview)' : 'Sound off'}
+            aria-label="Sound"
+            aria-pressed={ed.audible() ? 'true' : 'false'}
+          >
+            {ed.audible() ? '🔊' : '🔇'}
+          </button>
+        </Show>
+        <label class="speed" title="Playback speed">
           <select
             onChange={e => ed.setSpeed(Number(e.currentTarget.value))}
             aria-label="Playback speed"
